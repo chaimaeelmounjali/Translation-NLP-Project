@@ -1,0 +1,58 @@
+{
+  "timestamp": "2026-04-12T22:21:00.248663+00:00",
+  "total_rows_processed": 9005,
+  "removed_rows": 0,
+  "cleaned_rows": 8993,
+  "flagged_rows": 12,
+  "modified_rows": 9005,
+  "issue_summary": {
+    "flagged_langid_arabizi_contains_arabic": 8,
+    "flagged_length_discrepancy": 4
+  },
+  "column_modification_summary": {
+    "darija_arabic": 8619,
+    "darija_arabizi": 7972,
+    "english": 9001,
+    "modern_standard_arabic": 8880
+  },
+  "length_discrepancy_thresholds": {
+    "char_ratio_threshold": 8.0,
+    "word_ratio_threshold": 6.0,
+    "min_chars_for_ratio": 3
+  },
+  "input_csv": "c:\\Users\\RPC\\Desktop\\Traduction\\artifacts\\silver_shard_3_qc\\silver_shard_3.corrected.auto.final.csv",
+  "output_csv": "c:\\Users\\RPC\\Desktop\\Traduction\\artifacts\\silver_shard_3_cleaned\\silver_shard_3.corrected.cleaned.balanced.csv",
+  "report_json": "c:\\Users\\RPC\\Desktop\\Traduction\\artifacts\\silver_shard_3_cleaned\\cleaning_report.balanced.json",
+  "rows_written_to_output_csv": 9005,
+  "stopword_settings": {
+    "english_enabled": true,
+    "arabic_enabled": true,
+    "arabizi_enabled": true,
+    "english_count": 58,
+    "arabic_count": 32,
+    "arabizi_count": 21,
+    "english_add_arg": "",
+    "arabic_add_arg": "",
+    "arabizi_add_arg": "",
+    "english_stopwords_file": "",
+    "arabic_stopwords_file": "",
+    "arabizi_stopwords_file": ""
+  },
+  "advanced_normalization_settings": {
+    "cleaning_profile": "balanced",
+    "arabic_final_taa_mode": "haa",
+    "darija_g_standard": "ڭ",
+    "darija_v_standard": "ف",
+    "arabizi_kh_standard": "keep",
+    "laugh_mode": "token",
+    "laugh_token": "<LAUGH>",
+    "normalize_hamza": false,
+    "normalize_arabizi_prefixes": false,
+    "normalize_darija_prefixes": false,
+    "expand_english_contractions": true,
+    "apply_basic_english_spell_fixes": true,
+    "min_words_per_field": 1,
+    "max_words_per_field": 180,
+    "missing_value_policy": "flag"
+  }
+}

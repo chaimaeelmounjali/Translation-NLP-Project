@@ -1,0 +1,17 @@
+{
+  "gold_total_rows": 1000,
+  "first_input_rows": 4499,
+  "last_input_rows": 500,
+  "first_matches_expected_500": 0,
+  "last_matches_expected_500": 500,
+  "source_counts": {
+    "first_file": 0,
+    "last_file": 500,
+    "gold_fallback": 500
+  },
+  "dropped_rows_due_empty_required_fields": 0,
+  "output_rows": 1000,
+  "warnings": [
+    "First-half file has zero matching data_id values for gold_shard_3 first 500 rows."
+  ]
+}

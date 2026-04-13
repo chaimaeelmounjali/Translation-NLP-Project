@@ -1,0 +1,25 @@
+# Secrets
+.env
+
+# Python virtual environments
+env/
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Notebook cache
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Checkpoints and temporary correction artifacts
+checkpoints/*.csv
+shards/silver_9k_shards/*.ckpt.jsonl
+shards/silver_9k_shards/*.corrected.from*.csv
+
+# Optional local reports
+*.report.json

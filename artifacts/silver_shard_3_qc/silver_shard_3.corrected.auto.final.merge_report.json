@@ -1,0 +1,19 @@
+﻿{
+    "timestamp":  "2026-04-12T21:12:53.1962449+01:00",
+    "source_auto_csv":  "silver_shard_3.corrected.auto.csv",
+    "merged_updates_from":  [
+                                "silver_shard_3.corrected.auto.errors.remaining.rechecked.csv",
+                                "silver_shard_3.corrected.auto.errors.remaining.secondpass.output.csv"
+                            ],
+    "output_final_csv":  "silver_shard_3.corrected.auto.final.csv",
+    "merged_rows":  3,
+    "merged_data_ids":  [
+                            "data75210",
+                            "data79462",
+                            "data81026"
+                        ],
+    "status_summary":  "VALIDATED:9005",
+    "changed_rows":  8860,
+    "unchanged_rows":  145,
+    "remaining_error_rows":  0
+}

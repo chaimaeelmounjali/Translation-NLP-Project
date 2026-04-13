@@ -1,0 +1,171 @@
+<View>
+  <Style>
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&amp;display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Arabic:wght@400;700&amp;display=swap');
+
+    .ls-view { 
+      padding: 20px; 
+      background-color: #f1f5f9; 
+      font-family: 'Poppins', sans-serif; 
+    }
+    
+    .meta-bar {
+      display: flex;
+      justify-content: space-between;
+      background: #1e293b;
+      color: white;
+      padding: 12px 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-size: 0.9rem;
+    }
+
+    .main-grid { 
+      display: grid; 
+      grid-template-columns: 1fr 1fr; 
+      gap: 20px; 
+      margin-bottom: 20px;
+    }
+    
+    .card { 
+      padding: 20px; 
+      border-radius: 12px; 
+      background: white; 
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+      border: 1px solid #e2e8f0;
+    }
+
+    .footer-card {
+      background: #ffffff;
+      border-top: 4px solid #10b981;
+    }
+
+    .section-header {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 15px;
+      padding-bottom: 5px;
+      border-bottom: 2px solid #f1f5f9;
+      display: block;
+    }
+
+    .arabic-input {
+      font-family: 'Noto Sans Arabic', 'Segoe UI Arabic', sans-serif;
+      direction: rtl;
+      font-size: 1.4rem !important;
+      line-height: 1.6;
+      background-color: #fffaf5;
+    }
+
+    .latin-input {
+      font-family: 'Poppins', sans-serif;
+      font-size: 1rem;
+    }
+
+    .label-small {
+      font-size: 0.7rem; 
+      font-weight: bold; 
+      margin-bottom: 10px; 
+      display: block;
+      color: #64748b;
+      text-transform: uppercase;
+    }
+  </Style>
+
+  <Text name="task_anchor" value="$id" visible="false"/>
+
+  <!-- 1. HEADER METADATA BAR -->
+  <View className="meta-bar">
+    <Text name="meta_id" value="ID: $id"/>
+    <Text name="meta_bucket" value="BUCKET: $classe"/>
+    <Text name="meta_wc" value="WORDS: $english_word_count"/>
+    <Text name="meta_status" value="STATUS: $status" style="font-weight: bold; color: #fbbf24"/>
+  </View>
+
+  <!-- 2. MAIN EDITING COLUMNS -->
+  <View className="main-grid">
+    <!-- LEFT PANEL: SOURCE REFINEMENT (DARIJA) -->
+    <View className="card">
+      <Text name="lbl_src_group" className="section-header" value="Source Refinement"/>
+      
+      <View style="margin-bottom: 20px">
+        <Header value="Darija (Arabic Script) - Correct spelling here" style="font-size: 0.85rem; color: #475569"/>
+        <TextArea name="corrected_darija_arabic" 
+                  toName="task_anchor" 
+                  value="$darija_arabic" 
+                  rows="3" 
+                  transcription="true"
+                  maxSubmissions="1"
+                  className="arabic-input"
+                  editable="true"/>
+      </View>
+
+      <View>
+        <Header value="Darija (Arabizi) - Review phonetics" style="font-size: 0.85rem; color: #475569"/>
+        <TextArea name="corrected_darija_arabizi" 
+                  toName="task_anchor" 
+                  value="$darija_arabizi" 
+                  rows="3" 
+                  transcription="true"
+                  maxSubmissions="1"
+                  className="latin-input"
+                  editable="true"/>
+      </View>
+    </View>
+
+    <!-- RIGHT PANEL: TARGET TRANSLATION (EN/MSA) -->
+    <View className="card">
+      <Text name="lbl_tgt_group" className="section-header" value="Target Translation"/>
+
+      <View style="margin-bottom: 20px">
+        <Header value="English Translation" style="font-size: 0.85rem; color: #2563eb"/>
+        <TextArea name="corrected_english" 
+                  toName="task_anchor" 
+                  value="$english" 
+                  rows="3" 
+                  transcription="true"
+                  maxSubmissions="1"
+                  className="latin-input"
+                  editable="true"
+                  required="true"/>
+      </View>
+
+      <View>
+        <Header value="MSA (Standard Arabic) - Requires Correction" style="font-size: 0.85rem; color: #059669"/>
+        <TextArea name="corrected_msa" 
+                  toName="task_anchor" 
+                  value="$modern_standard_arabic" 
+                  rows="3" 
+                  transcription="true"
+                  maxSubmissions="1"
+                  className="arabic-input"
+                  editable="true"
+                  required="true"/>
+      </View>
+    </View>
+  </View>
+
+  <!-- 3. FOOTER DECISION AREA -->
+  <View className="card footer-card">
+    <Text name="lbl_final" className="label-small" value="Final Quality Check"/>
+    
+    <View style="display: flex; gap: 40px; align-items: flex-start;">
+      <View style="flex: 0 0 200px">
+        <Choices name="decision" toName="task_anchor" choice="single" showInline="true">
+          <Choice value="VALIDATED" style="color: #059669; font-weight: bold;"/>
+        </Choices>
+      </View>
+
+      <View style="flex: 1">
+        <TextArea name="final_comment" 
+                  toName="task_anchor" 
+                  rows="2" 
+                  placeholder="English was more accurate than MSA...." 
+                  className="latin-input"/>
+      </View>
+    </View>
+  </View>
+</View>
