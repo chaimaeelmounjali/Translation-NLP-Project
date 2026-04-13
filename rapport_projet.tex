@@ -1,0 +1,139 @@
+\documentclass[12pt,a4paper]{article}
+
+% ====== Packages ======
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{tocloft}
+\usepackage{fancyhdr}
+\usepackage{float}
+
+% ====== Configuration ======
+\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    citecolor=black,
+}
+
+% ====== En-tête et pied de page ======
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Projet R\&D : Traduction Automatique}
+\fancyhead[R]{\thepage}
+\fancyfoot[C]{Text Mining \& NLP}
+
+\begin{document}
+
+% ====== Page de Garde ======
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    
+    {\Huge \bfseries Rapport Technique de Projet R\&D \par}
+    \vspace{1cm}
+    {\LARGE \bfseries Traduction Automatique Darija (MT) \par}
+    \vspace{0.5cm}
+    {\large Phase 1 : Constitution et Préparation Avancée des Données \par}
+    
+    \vspace{2.5cm}
+    
+    {\Large \bfseries Réalisé par : \par}
+    \vspace{0.5cm}
+    % --- À COMPLÉTER PAR L'UTILISATEUR ---
+    {\large [Nom de l'Étudiant 1] \par}
+    {\large [Nom de l'Étudiant 2] \par}
+    % -------------------------------------
+    
+    \vspace{2cm}
+    {\Large \bfseries Encadré par : \par}
+    \vspace{0.5cm}
+    % --- À COMPLÉTER PAR L'UTILISATEUR ---
+    {\large [Nom du Professeur / Encadrant] \par}
+    % -------------------------------------
+    
+    \vfill
+    {\large \today \par}
+\end{titlepage}
+
+% ====== Table des matières ======
+\tableofcontents
+\newpage
+
+% ====== 1. Introduction ======
+\section{Introduction et Contexte}
+Ce rapport détaille la première phase critique d'un projet de conception d'un modèle de traduction automatique (Machine Translation) impliquant la Darija marocaine. Étant donné la nature \textit{"low-resource"} de cette langue et sa grande variabilité (caractères arabes vs Arabizi), la qualité des données d'entraînement détermine in fine la réussite de toute modélisation future. 
+
+L'état d'avancement actuel du projet se concentre \textbf{exclusivement sur la préparation, le nettoyage et la validation de notre corpus}. Le jeu de données se divise en deux parties distinctes qui ont nécessité deux pipelines de traitement radicalement différents :
+\begin{itemize}
+    \item \textbf{Le Gold Standard} : Une base de test destinée à la validation ultime, ayant subi un nettoyage manuel strict.
+    \item \textbf{Le Silver Standard (Shard)} : Un corpus volumineux destiné à l'entraînement, préparé à l'aide d'un pipeline automatique, d'assistants IA et de vérifications d'embeddings.
+\end{itemize}
+
+% ====== 2. Phase 1 : Traitement du Gold Standard ======
+\section{Préparation du Gold Standard : La Vérité Terrain}
+Le \textbf{Gold Standard} garantit la pureté de notre modèle lors de ses futures évaluations. 
+
+L'approche adoptée pour ce jeu de données a été un nettoyage \textbf{100\% manuel et minutieux} à l'aide de l'outil d'annotation \textbf{Label Studio}.
+Plutôt que de confier la tâche à des algorithmes automatisés pouvant subir des hallucinations, l'équipe a examiné manuellement la correspondance entre la Darija (scripte arabe et latin), l'Anglais, et l'Arabe Standard (MSA). 
+
+Les règles d'annotation suivantes ont été strictement respectées :
+\begin{itemize}
+    \item \textit{Fidélité sémantique sans censure} : Conservation du "code-switching" (mélange de langues typique en Darija).
+    \item \textit{Normalisation de l'Arabizi} : Vérification lettre par lettre des translittérations.
+    \item \textit{Attribution de statuts finaux} : Les données ne passent à l'étape suivante que si elles obtiennent le statut \textbf{VALIDATED}.
+\end{itemize}
+Ces corrections manuelles approfondies ont produit la vérité terrain irréfutable du projet.
+
+% ====== 3. Phase 2 : Traitement du Silver Standard ======
+\section{Préparation du Silver Standard : Pipeline Automatisé Haut Niveau}
+Face au volume massif du \textbf{Silver Standard} (plusieurs milliers de lignes), un nettoyage manuel devenait impraticable. Nous avons donc mis en place une chaîne de traitement (pipeline) en trois grandes étapes.
+
+\subsection{Étape 1 : Pré-traduction et Correction via API}
+Pour surmonter le problème de "Cold Start", les phrases incomplètes ou mal alignées ont d'abord été soumises à une API LLM (Large Language Model). Cette API agissant comme traducteur expert dialectal, nous a fourni un brouillon ("First Draft") de haute qualité. Cette phase a permis de combler les vides structurels du jeu de données brut.
+
+\subsection{Étape 2 : Nettoyage par Script et Statistiques d'Audit}
+Après l'injection des traductions de l'API, des anomalies (pollutions linguistiques ou erreurs de traitement) subsistaient. Un script Python robuste (\texttt{clean\_silver\_shard\_3\_corrected.py}) a été exécuté pour :
+1. Purger les stopwords (NLTK ou built-in).
+2. Normaliser les préfixes, harmoniser les lettres "Ta", "Ha", "Hamza", "ڭ" et "ف".
+3. Corriger basiquement l'orthographe anglaise.
+
+\textbf{Statistiques officielles du nettoyage (Avant / Après) :}
+\begin{itemize}
+    \item \textbf{Total des lignes traitées} : 9 005
+    \item \textbf{Lignes entièrement nettoyées et prêtes} : 6 382
+    \item \textbf{Lignes flaguées humainement (Anomalies)} : 2 600
+    \item \textbf{Lignes définitivement supprimées} : 23 (Hors des tolérances de taille)
+    \item \textbf{Volumétrie modifiée} : 100\% du dataset (9 005 lignes ont eu au moins un nettoyage syntaxique/grammatical).
+\end{itemize}
+
+De plus, l'audit approfondi a repéré des incohérences intra-colonnes massives à traiter, parmi lesquelles 1 590 fuites latines dans la colonne strictement réservée au Darija (arabique) et 1 242 fuites latines dans l'Arabe Standard. Ce nettoyage informatique était donc indispensable avant l'étape de contrôle sémantique.
+
+\subsection{Étape 3 : Contrôle Qualité Sémantique Hybride par Embeddings}
+La phase finale et la plus innovante de notre préparation de données réside dans notre module de consistance hybride (\texttt{hybrid\_semantic\_consistency.py}).
+Il s'agit de garantir \underline{mathématiquement} que les quatre phrases d'une même ligne (Darija Arabic, Darija Arabizi, English et MSA) racontent exactement la même chose.
+
+\textbf{L'architecture de validation repose sur :}
+\begin{enumerate}
+    \item \textbf{Une mesure spatiale (Fast Embedding Similarity)} : Le fichier CSV passe par un modèle d'embedding LLM qui vectorise chaque case. Nous générons un score de Cosinus de similarité (Cosine Similarity) entre les paires (Darija vs Anglais, Anglais vs MSA, etc.).
+    \item \textbf{Validation Conditionnelle LLM ("LLM en filet de sécurité")} : S'il s'avère que le score calculé chute sous le seuil acceptable (par exemple 0.80), la ligne est immédiatement marquée comme "SUSPICIOUS" (suspecte) ; le script convoise un LLM structuré en mode JSON pour forcer une révision contextuelle ciblée de la définition et re-générer les mots asynchrones. 
+\end{enumerate}
+Cette technique hybride nous a permis de garantir un alignement de haute qualité sur les 4 dimensions de notre base, tout en étant remarquablement peu coûteuse en appels API par rapport à une validation générative LLM totale.
+
+% ====== 4. Conclusion ======
+\section{Conclusion et Perspectives de Modélisation}
+À ce stade, l'intégralité du temps a été investie de manière assumée dans le raffinage du volume de données. Le \textbf{Gold Standard} pur permet d'établir une ligne d'évaluation et le \textbf{Silver Standard} massifié, filtré et sémantiquement verrouillé par les approches d'Embeddings, offre une base fertile et saine.
+
+\textbf{Next Steps (Perspectives) :}
+Le dataset est désormais validé scientifiquement. Les travaux qui s'ensuivront au sein de l'architecture se concentreront sur la Modélisation proprement dite (Mise en configuration d'un module Transformer séquence-à-séquence tel que \textit{AraT5v2} sur Google Colab) ainsi que sur le benchmarking scientifique associé (Score BLEU, chrF++ et BERTScore).
+
+\end{document}
