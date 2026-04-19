@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-04-13T08:54:45.025550+00:00",
+  "total_rows_processed": 9005,
+  "removed_rows": 4,
+  "cleaned_rows": 6867,
+  "flagged_rows": 2134,
+  "modified_rows": 9000,
+  "issue_summary": {
+    "flagged_langid_darija_arabic_contains_latin": 1590,
+    "flagged_cross_darija_arabizi_incoherence": 477,
+    "flagged_langid_msa_contains_latin": 1242,
+    "flagged_langid_arabizi_contains_arabic": 8,
+    "removed_word_count_out_of_bounds": 4,
+    "flagged_length_discrepancy": 1
+  },
+  "column_modification_summary": {
+    "darija_arabic": 8378,
+    "darija_arabizi": 5178,
+    "english": 8930,
+    "modern_standard_arabic": 8767
+  },
+  "length_discrepancy_thresholds": {
+    "char_ratio_threshold": 8.0,
+    "word_ratio_threshold": 6.0,
+    "min_chars_for_ratio": 3
+  },
+  "input_csv": "artifacts\\silver_shard_3_qc\\silver_shard_3.corrected.auto.final.csv",
+  "output_csv": "artifacts\\silver_shard_3_cleaned_no_sw\\silver_shard_3.corrected.cleaned.no_sw.csv",
+  "report_json": "artifacts\\silver_shard_3_cleaned_no_sw\\cleaning_report.no_sw.json",
+  "rows_written_to_output_csv": 9005,
+  "stopword_settings": {
+    "english_enabled": false,
+    "arabic_enabled": false,
+    "arabizi_enabled": false,
+    "english_count": 58,
+    "arabic_count": 32,
+    "arabizi_count": 21,
+    "english_add_arg": "",
+    "arabic_add_arg": "",
+    "arabizi_add_arg": "",
+    "english_stopwords_file": "",
+    "arabic_stopwords_file": "",
+    "arabizi_stopwords_file": ""
+  },
+  "advanced_normalization_settings": {
+    "cleaning_profile": "strict",
+    "arabic_final_taa_mode": "haa",
+    "darija_g_standard": "ڭ",
+    "darija_v_standard": "ف",
+    "arabizi_kh_standard": "kh",
+    "laugh_mode": "token",
+    "laugh_token": "<LAUGH>",
+    "normalize_hamza": true,
+    "normalize_arabizi_prefixes": true,
+    "normalize_darija_prefixes": true,
+    "expand_english_contractions": true,
+    "apply_basic_english_spell_fixes": true,
+    "min_words_per_field": 2,
+    "max_words_per_field": 150,
+    "missing_value_policy": "flag"
+  }
+}

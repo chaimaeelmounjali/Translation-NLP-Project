@@ -1,61 +1,11 @@
 {
-  "timestamp": "2026-04-12T22:17:45.857845+00:00",
-  "total_rows_processed": 9005,
-  "removed_rows": 23,
-  "cleaned_rows": 6382,
-  "flagged_rows": 2600,
-  "modified_rows": 9005,
-  "issue_summary": {
-    "flagged_langid_darija_arabic_contains_latin": 1590,
-    "flagged_cross_darija_arabizi_incoherence": 1113,
-    "flagged_langid_msa_contains_latin": 1242,
-    "flagged_langid_arabizi_contains_arabic": 8,
-    "removed_word_count_out_of_bounds": 23,
-    "flagged_length_discrepancy": 3
-  },
-  "column_modification_summary": {
-    "darija_arabic": 8641,
-    "darija_arabizi": 8025,
-    "english": 9001,
-    "modern_standard_arabic": 8902
-  },
-  "length_discrepancy_thresholds": {
-    "char_ratio_threshold": 8.0,
-    "word_ratio_threshold": 6.0,
-    "min_chars_for_ratio": 3
-  },
-  "input_csv": "c:\\Users\\RPC\\Desktop\\Traduction\\artifacts\\silver_shard_3_qc\\silver_shard_3.corrected.auto.final.csv",
-  "output_csv": "c:\\Users\\RPC\\Desktop\\Traduction\\artifacts\\silver_shard_3_cleaned\\silver_shard_3.corrected.cleaned.csv",
-  "report_json": "c:\\Users\\RPC\\Desktop\\Traduction\\artifacts\\silver_shard_3_cleaned\\cleaning_report.json",
-  "rows_written_to_output_csv": 9005,
-  "stopword_settings": {
-    "english_enabled": true,
-    "arabic_enabled": true,
-    "arabizi_enabled": true,
-    "english_count": 58,
-    "arabic_count": 32,
-    "arabizi_count": 21,
-    "english_add_arg": "",
-    "arabic_add_arg": "",
-    "arabizi_add_arg": "",
-    "english_stopwords_file": "",
-    "arabic_stopwords_file": "",
-    "arabizi_stopwords_file": ""
-  },
-  "advanced_normalization_settings": {
-    "arabic_final_taa_mode": "haa",
-    "darija_g_standard": "ڭ",
-    "darija_v_standard": "ف",
-    "arabizi_kh_standard": "kh",
-    "laugh_mode": "token",
-    "laugh_token": "<LAUGH>",
-    "normalize_hamza": true,
-    "normalize_arabizi_prefixes": true,
-    "normalize_darija_prefixes": true,
-    "expand_english_contractions": true,
-    "apply_basic_english_spell_fixes": true,
-    "min_words_per_field": 2,
-    "max_words_per_field": 150,
-    "missing_value_policy": "flag"
-  }
+  "input_file": "artifacts\\silver_shard_3_qc\\silver_shard_3.corrected.auto.csv",
+  "cleaned_file": "artifacts\\silver_shard_3_cleaned\\silver_shard_3.corrected.cleaned.csv",
+  "top_darija_words_file": "artifacts\\silver_shard_3_cleaned\\darija_arabic_top_100.csv",
+  "kept_qc_columns": false,
+  "input_rows": 9005,
+  "dropped_rows": 38,
+  "dropped_metadata_rows": 31,
+  "dropped_empty_rows": 7,
+  "output_rows": 8967
 }

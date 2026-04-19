@@ -1,0 +1,269 @@
+\documentclass[10pt,aspectratio=169]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{Projet MT Darija: du Silver au Gold}
+\subtitle{QC hybride, cleaning robuste et recommandations MLOps/IA}
+\author{Equipe Traduction NLP}
+\institute{Projet R\&D Machine Translation}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Plan}
+  \tableofcontents
+\end{frame}
+
+\section{Introduction et problematique}
+
+\begin{frame}{Contexte}
+  \begin{itemize}
+    \item La Darija est une langue \emph{low-resource} pour la traduction automatique.
+    \item Le projet vise une transformation \textbf{Silver $\rightarrow$ Gold} avec validation humaine.
+    \item Les donnees sont multilingues: Darija (arabe + arabizi), anglais et arabe standard (MSA).
+    \item Le besoin principal: augmenter la qualite sans exploser les couts API.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Problematique}
+  \begin{itemize}
+    \item \textbf{Qualite heterogene}: artefacts MT, incoherences semantiques, bruit web.
+    \item \textbf{Alignement multilingue fragile}: meme phrase, 4 representations differentes.
+    \item \textbf{Scalabilite}: 9k+ lignes silver et 1k lignes gold a traiter.
+    \item \textbf{Reproductibilite}: reprise sur panne, traces des modifications, rapports exploitables.
+  \end{itemize}
+
+  \vspace{0.3cm}
+  \textbf{Question centrale:} comment construire un pipeline fiable, economique et audit-able pour livrer un corpus MT de haute qualite?
+\end{frame}
+
+\begin{frame}{Objectifs du projet}
+  \begin{itemize}
+    \item Automatiser la correction et la validation semantique avec \textbf{human-in-the-loop}.
+    \item Normaliser et nettoyer les textes avec des regles linguistiques robustes.
+    \item Produire des artefacts finaux exploitables pour l'entrainement MT.
+    \item Mesurer la qualite (flags, similarite, rapports) et preparer la phase modelisation.
+  \end{itemize}
+\end{frame}
+
+\section{Vue d'ensemble du pipeline}
+
+\begin{frame}{Pipeline complet du projet}
+  \centering
+  \begin{tikzpicture}[node distance=0.95cm, every node/.style={font=\small}]
+    \node[draw, rounded corners, fill=blue!8, align=center, text width=0.80\linewidth] (a) {1) Input Silver/Gold\\CSV bruts et/ou partiellement corriges};
+    \node[draw, rounded corners, fill=teal!8, align=center, text width=0.80\linewidth, below of=a] (b) {2) \texttt{check\_and\_correct\_mt.py}\\Correction LLM + checkpoint + rapport JSON};
+    \node[draw, rounded corners, fill=green!8, align=center, text width=0.80\linewidth, below of=b] (c) {3) \texttt{clean\_silver\_shard\_3\_corrected.py}\\Cleaning multilingue + flags + suppression duplicats/bruit};
+    \node[draw, rounded corners, fill=orange!10, align=center, text width=0.80\linewidth, below of=c] (d) {4) \texttt{merge\_corrected\_gold\_shard\_3.py}\\Fusion ordonnee Gold + fallback robuste};
+    \node[draw, rounded corners, fill=red!8, align=center, text width=0.80\linewidth, below of=d] (e) {5) \texttt{hybrid\_semantic\_consistency.py}\\Embeddings (filtre) + LLM (correction cibl\'ee)};
+    \node[draw, rounded corners, fill=purple!8, align=center, text width=0.80\linewidth, below of=e] (f) {6) Notebook de visualisation + Label Studio\\Analyse QC et validation finale};
+
+    \draw[->, thick] (a) -- (b);
+    \draw[->, thick] (b) -- (c);
+    \draw[->, thick] (c) -- (d);
+    \draw[->, thick] (d) -- (e);
+    \draw[->, thick] (e) -- (f);
+  \end{tikzpicture}
+\end{frame}
+
+\section{Role de chaque script}
+
+\begin{frame}{Script 1: \texttt{check\_and\_correct\_mt.py}}
+  \textbf{Mission:} correction QC automatique des 4 champs MT avec OpenAI.
+
+  \vspace{0.2cm}
+  \begin{itemize}
+    \item Validation/correction de: \texttt{darija\_arabic}, \texttt{darija\_arabizi}, \texttt{english}, \texttt{modern\_standard\_arabic}.
+    \item Concurrence via \texttt{ThreadPoolExecutor} et rate limiting (RPM/TPM).
+    \item \texttt{Checkpoint JSONL}: reprise sans retraiter les lignes deja faites.
+    \item Sorties: CSV corrige + rapport JSON (tokens, cout estime, erreurs, champs modifies).
+    \item Mode \texttt{dry-run} pour tester les prompts avant ecriture.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Script 2: \texttt{clean\_silver\_shard\_3\_corrected.py}}
+  \textbf{Mission:} nettoyage linguistique avance et controle qualite ligne par ligne.
+
+  \vspace{0.2cm}
+  \begin{itemize}
+    \item Normalisation texte: artefacts, espaces, ponctuation, bruit web/email/mentions.
+    \item Nettoyage specifique Darija/Arabizi/English/MSA + stopwords configurables.
+    \item Detection d'anomalies: mismatch script, incoherence Darija-Arabizi, longueurs extremes.
+    \item Gestion statut de sortie: \texttt{CLEAN}, \texttt{FLAGGED}, \texttt{REMOVED}.
+    \item Rapport complet: synthese issues, champs modifies, seuils et configuration.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Script 3: \texttt{merge\_corrected\_gold\_shard\_3.py}}
+  \textbf{Mission:} fusionner proprement les moities corrigees du Gold shard.
+
+  \vspace{0.2cm}
+  \begin{itemize}
+    \item Normalise les schemas (standard vs export Label Studio \texttt{corrected\_*}).
+    \item Respecte l'ordre canonique des 1000 lignes Gold.
+    \item Controle les champs textes obligatoires non vides.
+    \item Strategie de fallback pour eviter des trous quand IDs non alignes.
+    \item Produit: CSV fusionne + rapport JSON de matching et warnings.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Script 4: \texttt{hybrid\_semantic\_consistency.py}}
+  \textbf{Mission:} verifier la coherence semantique de maniere hybride et economique.
+
+  \vspace{0.2cm}
+  \begin{itemize}
+    \item Etape A: embeddings pour score de similarite multi-paires.
+    \item Etape B: appel LLM seulement si score $< \texttt{threshold}$.
+    \item Flags de sortie: \texttt{CONSISTENT}, \texttt{SUSPICIOUS}, \texttt{CORRECTED}.
+    \item Checkpoint + reprise, retries, rate limiting, visualisations PNG.
+    \item Rapport final: volumes, cout LLM, similarite moyenne, lignes corrigees.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Notebook et interface d'annotation}
+  \textbf{\texttt{Hybrid\_Semantic\_QC\_Visualization.ipynb}}
+  \begin{itemize}
+    \item Charge les artefacts Silver/Gold disponibles.
+    \item Compare distribution des flags et histogrammes de similarite.
+    \item Resume les KPI du rapport hybride (rows, cout, corrections).
+  \end{itemize}
+
+  \vspace{0.2cm}
+  \textbf{\texttt{Labeling\_Interface.xml}}
+  \begin{itemize}
+    \item Interface Label Studio moderne en 2 panneaux (source/target).
+    \item Champs de correction dedies pour Darija arabe, Arabizi, English, MSA.
+    \item Decision finale \texttt{VALIDATED} + commentaire annotateur.
+  \end{itemize}
+\end{frame}
+
+\section{Resultats et points forts}
+
+\begin{frame}{Resultats chiffres (artefacts actuels)}
+  \small
+  \begin{tabular}{p{0.34\linewidth} p{0.60\linewidth}}
+    \toprule
+    \textbf{Etape} & \textbf{Indicateurs clés} \\
+    \midrule
+    Silver merge final & 9005 lignes, 8860 lignes modifiees, 145 inchang\'ees, 0 erreurs restantes. \\
+    \addlinespace
+    Cleaning strict & 9005 traitees, 6382 \texttt{CLEAN}, 2600 \texttt{FLAGGED}, 23 \texttt{REMOVED}. \\
+    \addlinespace
+    Cleaning balanced & 9005 traitees, 8993 \texttt{CLEAN}, 12 \texttt{FLAGGED}, 0 \texttt{REMOVED}. \\
+    \addlinespace
+    Gold merge & 1000 lignes sortie, warning d'incoherence IDs sur la 1ere moitie, fallback actif. \\
+    \addlinespace
+    Gold hybrid QC & 1000 lignes, 728 corrigees, 270 consistantes, cout estime \$0.6577. \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\begin{frame}{Point fort principal: pipeline hybride semantics + QC}
+  \begin{itemize}
+    \item Architecture \textbf{filtre embeddings + correction LLM} tres pertinente pour reduire le cout.
+    \item Capacite industrielle: retries, checkpoint, parallelisme, rapporting JSON, visualisation.
+    \item Compatibilite annotation humaine (Label Studio) pour garder la qualite linguistique.
+  \end{itemize}
+
+  \vspace{0.2cm}
+  Cout LLM estime:
+  \[
+    \text{Cost} = \frac{T_{in}}{10^6} \times P_{in} + \frac{T_{out}}{10^6} \times P_{out}
+  \]
+  \small
+  ou $T_{in}, T_{out}$ sont les tokens prompt/completion et $P_{in}, P_{out}$ les prix par million de tokens.
+\end{frame}
+
+\begin{frame}{Limites observees et risques}
+  \begin{itemize}
+    \item Seuil unique de similarite peut surdeclencher les appels LLM (cas Gold: 998/1000 lignes suspectes).
+    \item Forte variabilite linguistique Darija $\leftrightarrow$ Arabizi complique les regles strictes.
+    \item Dependance a la cle API pour certaines etapes critiques.
+    \item Besoin d'un protocole d'evaluation modele (BLEU/chrF/BERTScore/COMET) encore a industrialiser.
+  \end{itemize}
+\end{frame}
+
+\section{Recommandations MLOps}
+
+\begin{frame}{Architecture MLOps recommandee}
+  \begin{itemize}
+    \item \textbf{Data Versioning}: DVC + stockage objet (S3/MinIO) pour CSV et checkpoints.
+    \item \textbf{Experiment Tracking}: MLflow ou Weights\&Biases (params, metrics, artefacts).
+    \item \textbf{Pipeline Orchestration}: Prefect ou Airflow pour encha\^iner QC, cleaning, hybrid check, training.
+    \item \textbf{Model Registry}: versionnement des modeles MT finetunes et promotion staging/prod.
+    \item \textbf{CI/CD}: GitHub Actions pour tests data, lint, validation schema, build des rapports.
+    \item \textbf{Monitoring}: quality drift, cout API, taux \texttt{SUSPICIOUS}, latence inference.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Plan d'implementation MLOps (propose)}
+  \begin{enumerate}
+    \item Standardiser contrats de donnees (schema, valeurs de \texttt{status}, checks auto).
+    \item Encapsuler chaque script en job reproductible avec config YAML.
+    \item Centraliser metriques et artefacts dans MLflow/W\&B.
+    \item Ajouter tests automatiques de non-regression linguistique (sample fixe).
+    \item Mettre en place un dashboard de suivi qualite/cout hebdomadaire.
+  \end{enumerate}
+\end{frame}
+
+\section{Pistes IA / ML / Deep Learning}
+
+\begin{frame}{Algorithmes recommand\'es pour la suite}
+  \textbf{Baselines MT supervisees}
+  \begin{itemize}
+    \item AraT5v2, mT5, NLLB-200, MADLAD-400 (seq2seq multilingue).
+    \item Fine-tuning directionnel: Darija\,$\rightarrow$\,English, Darija\,$\rightarrow$\,MSA.
+  \end{itemize}
+
+  \textbf{Optimisation entrainement}
+  \begin{itemize}
+    \item LoRA / QLoRA pour reduire cout GPU.
+    \item Curriculum learning selon la classe de longueur (A/B/C/D).
+    \item Back-translation pour enrichir les paires paralleles.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Algorithmes IA complementaires utiles}
+  \begin{itemize}
+    \item \textbf{Quality Estimation}: COMET-Kiwi pour predire la qualite sans reference.
+    \item \textbf{Active Learning}: prioriser annotation humaine sur lignes les plus incertaines.
+    \item \textbf{Semantic Retrieval}: LaBSE/SBERT pour detection de paraphrases ou duplicats semantiques.
+    \item \textbf{Error Classification}: modele de classification des types d'erreurs (lexicale, registre, entites, etc.).
+  \end{itemize}
+\end{frame}
+
+\section{Conclusion}
+
+\begin{frame}{Conclusion}
+  \begin{itemize}
+    \item Le projet a deja une base technique solide et reproductible pour passer de Silver a Gold.
+    \item Le point fort est le \textbf{pipeline hybride} qui combine vitesse, cout maitrise et qualite.
+    \item Prochaine etape naturelle: industrialiser avec MLOps puis entrainer/benchmarker les modeles MT.
+  \end{itemize}
+
+  \vspace{0.25cm}
+  \centering
+  \textbf{Resultat attendu: un corpus Darija MT fiable + une chaine de production mesurable et evolutive.}
+\end{frame}
+
+\begin{frame}
+  \centering
+  \Large Merci pour votre attention
+\end{frame}
+
+\end{document}

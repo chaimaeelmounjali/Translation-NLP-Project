@@ -379,6 +379,7 @@ def process_row(
     embedding_model: str,
     llm_model: str,
     threshold: float,
+    llm_threshold: Optional[float],
     dry_run: bool,
     embedding_rate_limiter: RateLimiter,
     llm_rate_limiter: RateLimiter,
@@ -401,6 +402,8 @@ def process_row(
 
     overall = sim.overall_score
     embedding_suspicious = overall < threshold
+    effective_llm_threshold = threshold if llm_threshold is None else llm_threshold
+    llm_required = overall < effective_llm_threshold
     low_similarity = overall < low_similarity_threshold
 
     if low_similarity:
@@ -434,6 +437,12 @@ def process_row(
         if dry_run:
             final_flag = CONSISTENCY_SUSPICIOUS
             generated_note = f"Embedding suspicious (score={overall:.3f}; {pair_note}); dry-run -> LLM skipped."
+        elif not llm_required:
+            final_flag = CONSISTENCY_SUSPICIOUS
+            generated_note = (
+                f"Embedding suspicious (score={overall:.3f}; {pair_note}); "
+                f"above llm-threshold={effective_llm_threshold:.3f} -> LLM skipped."
+            )
         else:
             llm_called = True
             llm = call_llm(
@@ -596,9 +605,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, help="Output corrected CSV path")
     parser.add_argument("--report", required=True, help="Output JSON report path")
     parser.add_argument("--threshold", type=float, default=0.80, help="Embedding similarity threshold")
+    parser.add_argument(
+        "--llm-threshold",
+        type=float,
+        default=None,
+        help="Optional lower threshold for calling LLM (rows between llm-threshold and threshold stay SUSPICIOUS without LLM)",
+    )
     parser.add_argument("--model", default="gpt-4.1-mini", help="LLM model")
     parser.add_argument("--workers", type=int, default=6, help="Thread workers")
     parser.add_argument("--dry-run", action="store_true", help="Skip LLM calls and keep suspicious rows")
+    parser.add_argument("--max-rows", type=int, default=0, help="Process only first N rows (0 = all rows)")
 
     # Optional but useful production controls.
     parser.add_argument("--embedding-model", default="text-embedding-3-small", help="Embedding model")
@@ -621,6 +637,9 @@ def main() -> None:
     report_path = Path(args.report)
     checkpoint_path = Path(args.checkpoint) if args.checkpoint else Path(str(output_path) + ".ckpt.jsonl")
 
+    if args.llm_threshold is not None and args.llm_threshold > args.threshold:
+        raise SystemExit("--llm-threshold must be <= --threshold")
+
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
@@ -637,6 +656,8 @@ def main() -> None:
     validate_columns(df, TARGET_COLUMNS)
 
     rows = df.to_dict(orient="records")
+    if int(args.max_rows) > 0:
+        rows = rows[: int(args.max_rows)]
     total_rows = len(rows)
 
     client = OpenAI(api_key=api_key)
@@ -666,6 +687,7 @@ def main() -> None:
                     embedding_model=args.embedding_model,
                     llm_model=args.model,
                     threshold=float(args.threshold),
+                    llm_threshold=args.llm_threshold,
                     dry_run=bool(args.dry_run),
                     embedding_rate_limiter=embedding_limiter,
                     llm_rate_limiter=llm_limiter,
@@ -757,9 +779,11 @@ def main() -> None:
         "checkpoint": str(checkpoint_path),
         "report_json": str(report_path),
         "threshold": float(args.threshold),
+        "llm_threshold": None if args.llm_threshold is None else float(args.llm_threshold),
         "llm_model": args.model,
         "embedding_model": args.embedding_model,
         "dry_run": bool(args.dry_run),
+        "max_rows": int(args.max_rows),
         "workers": int(args.workers),
         "total_rows": int(total_rows),
         "consistent_rows": consistent_rows,

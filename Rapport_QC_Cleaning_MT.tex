@@ -1,0 +1,537 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\geometry{margin=2.3cm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xurl}
+\usepackage{enumitem}
+\usepackage{siunitx}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\setlength{\emergencystretch}{3em}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={Rapport QC et Cleaning MT},
+  pdfauthor={Projet Traduction}
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color[gray]{0.97}
+}
+
+\lstdefinelanguage{json}{
+  morestring=[b]",
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  showstringspaces=false
+}
+
+\title{Rapport Technique Complet\\
+QC et Cleaning des Donnees MT}
+\author{Projet Traduction}
+\date{06 Avril 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Objectif du rapport}
+Ce document decrit de maniere technique et reproductible:
+\begin{itemize}[leftmargin=*]
+  \item le fonctionnement de \texttt{check\_and\_correct\_mt.py},
+  \item le fonctionnement de \texttt{clean\_silver\_shard\_3\_corrected.py},
+  \item les bibliotheques utilisees,
+  \item les regles de cleaning appliquees,
+  \item les resultats obtenus a partir des rapports JSON,
+  \item les problemes observes et les ameliorations recommandees.
+\end{itemize}
+
+\section{Perimetre et artefacts analyses}
+\subsection{Scripts principaux}
+\begin{itemize}[leftmargin=*]
+  \item \path{check_and_correct_mt.py}
+  \item \path{clean_silver_shard_3_corrected.py}
+\end{itemize}
+
+\subsection{Rapports JSON utilises}
+\begin{itemize}[leftmargin=*]
+  \item \path{artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.report.json}
+  \item \path{artifacts/silver_shard_3_cleaned/cleaning_report.json}
+  \item \path{artifacts/gold_shard_3_cleaned/cleaning_report.json}
+  \item \path{artifacts/gold_shard_3_merge/gold_shard_3.merge_report.json}
+\end{itemize}
+
+\section{Bibliotheques et dependances}
+\subsection{Dependances declarees (requirements.txt)}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Package & Version minimale & Usage principal \\
+\midrule
+openai & \texttt{>=1.0.0} & Appels modele LLM (QC) \\
+pandas & \texttt{>=2.0.0} & Lecture/manipulation CSV \\
+tqdm & \texttt{>=4.65.0} & Barre de progression \\
+python-dotenv & \texttt{>=1.0.0} & Declaree, non utilisee directement \\
+nltk & \texttt{>=3.8.1} & Stopwords, stemming, lemmatisation \\
+pydantic & \texttt{>=2.6.0} & Validation schema JSON de sortie \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Imports effectifs dans les scripts}
+\textbf{Dans \path{check_and_correct_mt.py}:}
+\begin{itemize}[leftmargin=*]
+  \item standard library: argparse, csv, json, os, re, sys, threading, time,
+  pathlib, dataclasses, datetime, typing
+  \item externes: \texttt{openai}, \texttt{pydantic}, \texttt{tqdm}
+  \item parallellisme: \texttt{ThreadPoolExecutor} (concurrent futures)
+\end{itemize}
+
+\textbf{Dans \path{clean_silver_shard_3_corrected.py}:}
+\begin{itemize}[leftmargin=*]
+  \item standard library: argparse, html, json, re, unicodedata,
+  collections.Counter, pathlib, dataclasses, typing
+  \item externes: \texttt{pandas}, \texttt{nltk} (\texttt{stopwords}, \texttt{PorterStemmer}, \texttt{WordNetLemmatizer})
+\end{itemize}
+
+\section{Script 1: check\_and\_correct\_mt.py}
+\subsection{Role}
+Ce script realise un controle qualite multilingue (Darija arabe, Darija arabizi, anglais, MSA), corrige les champs texte via LLM, puis produit:
+\begin{itemize}[leftmargin=*]
+  \item un CSV corrige,
+  \item un rapport JSON detaille,
+  \item un checkpoint JSONL pour reprise/resume.
+\end{itemize}
+
+\subsection{Architecture technique}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Prompting et few-shot}: variable \texttt{FEW\_SHOT\_EXAMPLES} et construction via \texttt{build\_messages}. 
+  \item \textbf{Validation schema}: reponse forcee en \texttt{json\_object} puis validee par Pydantic (\texttt{QCResponse}, \texttt{FieldResult}).
+  \item \textbf{Rate limiting}: classe \texttt{TokenBucket} pour RPM/TPM.
+  \item \textbf{Concurrence}: \texttt{ThreadPoolExecutor} pour traiter plusieurs lignes en parallele.
+  \item \textbf{Robustesse}: retries differencies (\texttt{RateLimitError}, \texttt{APIError}, erreurs JSON).
+  \item \textbf{Reprise}: checkpoint incremental et saut des lignes deja traitees.
+\end{itemize}
+
+\subsection{Parametres CLI majeurs}
+\begin{itemize}[leftmargin=*]
+  \item chemins: \texttt{--input}, \texttt{--output}, \texttt{--report}, \texttt{--artifacts-dir}, \texttt{--checkpoint}
+  \item modele/API: \texttt{--api-key}, \texttt{--env-file}, \texttt{--model}
+  \item controle du batch: \texttt{--start-row}, \texttt{--end-row}, \texttt{--max-rows}, \texttt{--only-status}
+  \item performance: \texttt{--workers}, \texttt{--rpm}, \texttt{--tpm}, \texttt{--retries}
+  \item mode: \texttt{--dry-run}, \texttt{--output-style}
+\end{itemize}
+
+\subsection{Resultats QC (silver shard 3)}
+Source: \path{artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.report.json}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Indicateur & Valeur \\
+\midrule
+Modele & \texttt{gpt-4.1-mini} \\
+Total lignes & 9005 \\
+Lignes traitees & 9005 \\
+Lignes modifiees & 8856 \\
+Lignes en erreur & 4 \\
+Prompt tokens (total) & 8,839,538 \\
+Completion tokens (total) & 3,395,880 \\
+Cout estime (USD) & 8.969223 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Metriques derivees:
+\begin{itemize}[leftmargin=*]
+  \item taux de modification: $\frac{8856}{9005}\times 100 = 98.35\%$
+  \item taux d erreur: $\frac{4}{9005}\times 100 = 0.0444\%$
+  \item tokens moyens par ligne: prompt $\approx 981.63$, completion $\approx 377.11$
+\end{itemize}
+
+\subsection{Problemes observes sur le QC}
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Timeout API sur 4 lignes}: toutes les erreurs du rapport ont le message\newline
+  \texttt{ERROR: QC call failed after 4 attempts: Request timed out.}
+  \item \textbf{Lignes impactees}:\newline
+  (2167, \texttt{data75210}, \texttt{WIKI\_C\_09888}),\newline
+  (5153, \texttt{data78196}, \texttt{WIKI\_C\_10483}),\newline
+  (6419, \texttt{data79462}, \texttt{WIKI\_D\_00161}),\newline
+  (7983, \texttt{data81026}, \texttt{WIKI\_C\_09529}).
+\end{enumerate}
+
+\section{Script 2: clean\_silver\_shard\_3\_corrected.py}
+\subsection{Role}
+Ce script applique un pipeline de nettoyage NLP modulaire sur les 4 colonnes cibles:
+\begin{itemize}[leftmargin=*]
+  \item \texttt{darija\_arabic}
+  \item \texttt{darija\_arabizi}
+  \item \texttt{english}
+  \item \texttt{modern\_standard\_arabic}
+\end{itemize}
+
+\subsection{Nettoyages appliques (detail fonctionnel)}
+\subsubsection{Preprocessing global}
+\begin{itemize}[leftmargin=*]
+  \item suppression artefacts MT globaux: \texttt{<unk>}, \texttt{@-@}
+  \item nettoyage HTML/Markdown/URL/mentions
+  \item gestion des emojis (suppression par defaut)
+  \item normalisation des espaces
+\end{itemize}
+
+\subsubsection{Nettoyage par langue}
+\textbf{Anglais}
+\begin{itemize}[leftmargin=*]
+  \item lowercasing
+  \item expansion des contractions (ex: \texttt{don't} $\rightarrow$ \texttt{do not})
+  \item retrait ponctuation/symboles et stopwords
+  \item options: stem/lemma (desactivees par defaut)
+\end{itemize}
+
+\textbf{MSA}
+\begin{itemize}[leftmargin=*]
+  \item normalisation script arabe (diacritiques, tatweel, variantes Alef)
+  \item retrait stopwords MSA
+  \item options clitiques/stemming leger (desactivees par defaut)
+\end{itemize}
+
+\textbf{Darija arabe}
+\begin{itemize}[leftmargin=*]
+  \item normalisation arabe adaptee Darija
+  \item normalisation de variantes lexicales (mapping)
+  \item retrait stopwords Darija
+\end{itemize}
+
+\textbf{Darija arabizi}
+\begin{itemize}[leftmargin=*]
+  \item lowercasing
+  \item reduction des repetitions de caracteres
+  \item nettoyage ponctuation/symboles
+  \item suppression des chiffres isoles
+  \item options transliteration vers arabe / drop voyelles (desactivees par defaut)
+\end{itemize}
+
+\subsubsection{Filtres de lignes}
+\begin{itemize}[leftmargin=*]
+  \item suppression des lignes ``metadata contamination''
+  \item suppression optionnelle des lignes MSA avec marqueurs Darija
+  \item suppression optionnelle des lignes de statut \texttt{ERROR}
+  \item suppression des lignes avec champ cible vide (apres nettoyage)
+\end{itemize}
+
+\subsubsection{Post-clean quality fixes}
+\begin{itemize}[leftmargin=*]
+  \item suppression de placeholders residuels selon colonne
+  \item collapse des tokens adjacents dupliques
+  \item recalcul de \texttt{english\_word\_count}
+\end{itemize}
+
+\section{Resultats de cleaning (rapports JSON)}
+\subsection{Silver cleaned (mode strict)}
+Source: \path{artifacts/silver_shard_3_cleaned/cleaning_report.json}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Indicateur & Valeur \\
+\midrule
+Input rows & 9005 \\
+Dropped rows (total) & 175 \\
+Dropped metadata rows & 1 \\
+Dropped MSA-Darija leakage rows & 163 \\
+Dropped ERROR status rows & 4 \\
+Dropped empty rows & 7 \\
+Output rows & 8830 \\
+Placeholder removals & 5 \\
+Duplicate token removals & 945 \\
+english\_word\_count recomputed & 8779 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Metriques derivees:
+\begin{itemize}[leftmargin=*]
+  \item retention: $\frac{8830}{9005}\times 100 = 98.0566\%$
+  \item drop global: $\frac{175}{9005}\times 100 = 1.9434\%$
+  \item impact MSA leakage: $\frac{163}{9005}\times 100 \approx 1.81\%$
+\end{itemize}
+
+\subsection{Gold cleaned (conservation MSA-Darija)}
+Source: \path{artifacts/gold_shard_3_cleaned/cleaning_report.json}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Indicateur & Valeur \\
+\midrule
+Input rows & 1000 \\
+Dropped rows (total) & 21 \\
+Dropped metadata rows & 0 \\
+Dropped MSA-Darija leakage rows & 0 \\
+Dropped ERROR status rows & 0 \\
+Dropped empty rows & 21 \\
+Output rows & 979 \\
+Duplicate token removals & 76 \\
+english\_word\_count recomputed & 977 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Metriques derivees:
+\begin{itemize}[leftmargin=*]
+  \item retention: $\frac{979}{1000}\times 100 = 97.9\%$
+  \item toutes les suppressions proviennent des champs vides apres nettoyage.
+\end{itemize}
+
+\section{Resultat intermediaire merge gold}
+Source: \path{artifacts/gold_shard_3_merge/gold_shard_3.merge_report.json}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Indicateur & Valeur \\
+\midrule
+gold\_total\_rows & 1000 \\
+first\_input\_rows & 4499 \\
+last\_input\_rows & 500 \\
+first\_matches\_expected\_500 & 0 \\
+last\_matches\_expected\_500 & 500 \\
+output\_rows & 1000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Warning reportee: \textit{First-half file has zero matching data\_id values for gold\_shard\_3 first 500 rows.}
+
+\section{Interpretation des resultats EDA comparatifs}
+Sources notebooks:
+\begin{itemize}[leftmargin=*]
+  \item \path{EDA_gold_shard_3_comparatif.ipynb}
+  \item \path{EDA_silver_shard_3_comparatif.ipynb}
+\end{itemize}
+
+\subsection{Vue d ensemble volumes et retention}
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Dataset & Source rows & Cleaned rows & Dropped rows & Retention (\%) \\
+\midrule
+Gold shard 3 & 1000 & 979 & 21 & 97.90 \\
+Silver shard 3 & 9005 & 8830 & 175 & 98.0566 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Lecture:
+\begin{itemize}[leftmargin=*]
+  \item Les deux pipelines conservent la majorite des donnees (retention > 97\%).
+  \item Le drop silver est plus eleve en absolu (175 lignes) car il inclut le filtre MSA-leakage en mode strict.
+\end{itemize}
+
+\subsection{Evolution des statuts}
+\textbf{Gold (source):} GENERATED=749, PARTIALLY\_VALIDATED=250, active=1.\\
+\textbf{Gold (cleaned):} VALIDATED=498, GENERATED=354, PARTIALLY\_VALIDATED=127.
+
+\textbf{Silver (source):} GENERATED=6801, PARTIALLY\_VALIDATED=2199, active=5.\\
+\textbf{Silver (cleaned):} VALIDATED=8830.
+
+\noindent Lecture:
+\begin{itemize}[leftmargin=*]
+  \item Sur silver, le jeu nettoye est homogene en \texttt{VALIDATED}.
+  \item Sur gold, les statuts restent mixtes, ce qui est coherent avec une chaine de preparation differente (merge puis cleaning).
+\end{itemize}
+
+\subsection{Taux de changement texte (source vs cleaned)}
+Comparaison faite sur l intersection des \texttt{data\_id}:
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Colonne texte & Gold change rate (\%) & Silver change rate (\%) \\
+\midrule
+darija\_arabic & 99.2850 & 99.7282 \\
+darija\_arabizi & 92.4413 & 95.4360 \\
+english & 100.0000 & 100.0000 \\
+modern\_standard\_arabic & 98.9785 & 99.7622 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Rows avec au moins un champ texte modifie:
+\begin{itemize}[leftmargin=*]
+  \item Gold: 100.0\% (979/979)
+  \item Silver: 100.0\% (8830/8830)
+\end{itemize}
+
+\noindent Lecture:
+\begin{itemize}[leftmargin=*]
+  \item Le cleaning est fortement transformationnel, surtout sur \texttt{english} (100\% change).
+  \item \texttt{darija\_arabizi} varie un peu moins que les autres colonnes, mais reste > 92\% de modifications.
+\end{itemize}
+
+\subsection{Longueur des textes et outliers}
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Colonne & Gold mean src $\rightarrow$ cln & Silver mean src $\rightarrow$ cln & Gold max src $\rightarrow$ cln & Silver max src $\rightarrow$ cln \\
+\midrule
+darija\_arabic & 129.5530 $\rightarrow$ 102.9019 & 126.3861 $\rightarrow$ 101.3258 & 3739 $\rightarrow$ 524 & 366 $\rightarrow$ 282 \\
+darija\_arabizi & 136.0880 $\rightarrow$ 114.4076 & 137.1625 $\rightarrow$ 112.8159 & 333 $\rightarrow$ 307 & 413 $\rightarrow$ 302 \\
+english & 146.4870 $\rightarrow$ 101.0133 & 147.8856 $\rightarrow$ 100.9409 & 566 $\rightarrow$ 412 & 346 $\rightarrow$ 272 \\
+modern\_standard\_arabic & 123.5510 $\rightarrow$ 95.1164 & 142.7377 $\rightarrow$ 93.0967 & 335 $\rightarrow$ 261 & 163453 $\rightarrow$ 267 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Lecture:
+\begin{itemize}[leftmargin=*]
+  \item Les longueurs moyennes diminuent systematiquement apres cleaning sur les 4 colonnes (gold et silver).
+  \item L outlier massif en MSA sur silver (max=163453) disparait apres cleaning (max=267), ce qui confirme l effet de sanitation.
+\end{itemize}
+
+\section{Pipeline global du projet}
+\subsection{Pipeline fonctionnel}
+\begin{enumerate}[leftmargin=*]
+  \item Ingestion des shards bruts:
+  \begin{itemize}[leftmargin=*]
+    \item Gold: \path{shards/gold_1k_shards/gold_shard_3.csv}
+    \item Silver: \path{shards/silver_9k_shards/silver_shard_3.csv}
+  \end{itemize}
+  \item Correction QC multilingue (LLM) via \path{check_and_correct_mt.py}:
+  \begin{itemize}[leftmargin=*]
+    \item sortie CSV corrige + rapport JSON + checkpoint JSONL
+    \item exemple: \path{artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.csv}
+  \end{itemize}
+  \item Preparation Gold merge via \path{merge_corrected_gold_shard_3.py}:
+  \begin{itemize}[leftmargin=*]
+    \item sortie: \path{artifacts/gold_shard_3_merge/gold_shard_3.corrected.merged.csv}
+    \item audit: \path{artifacts/gold_shard_3_merge/gold_shard_3.merge_report.json}
+  \end{itemize}
+  \item Cleaning linguistique via \path{clean_silver_shard_3_corrected.py}:
+  \begin{itemize}[leftmargin=*]
+    \item sorties cleaned CSV + top words + cleaning report
+    \item silver: \path{artifacts/silver_shard_3_cleaned/}
+    \item gold: \path{artifacts/gold_shard_3_cleaned/}
+  \end{itemize}
+  \item EDA comparative des resultats:
+  \begin{itemize}[leftmargin=*]
+    \item \path{EDA_gold_shard_3_comparatif.ipynb}
+    \item \path{EDA_silver_shard_3_comparatif.ipynb}
+  \end{itemize}
+\end{enumerate}
+
+\subsection{Pipeline resume}
+\begin{lstlisting}
+Raw shards (gold/silver)
+        |
+        v
+QC correction (check_and_correct_mt.py)
+        |
+        +--> qc CSV + report + checkpoint
+        |
+        v
+Gold merge step (merge_corrected_gold_shard_3.py)
+        |
+        v
+Cleaning NLP (clean_silver_shard_3_corrected.py)
+        |
+        +--> cleaned CSV + top words + cleaning report
+        |
+        v
+EDA comparative notebooks (gold and silver)
+\end{lstlisting}
+
+\section{Problemes techniques constates}
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Timeouts API (QC)}: 4 lignes en echec malgre retries.
+  \item \textbf{Perte potentielle de donnees utiles}: en mode strict, 163 lignes retirees car MSA detectee comme Darija-like.
+  \item \textbf{Sortie de recheck incoherente}: \path{silver_shard_3.corrected.auto.errors.rechecked.csv} est vide (0 byte) alors que son checkpoint contient 1 entree.
+  \item \textbf{Dependance non exploitee explicitement}: \texttt{python-dotenv} est presente dans requirements mais non importee dans les scripts analyses.
+\end{enumerate}
+
+\section{Recommandations}
+\begin{enumerate}[leftmargin=*]
+  \item Pour conserver le code-switching MSA/Darija: lancer le cleaning avec \texttt{--keep-msa-darija-leakage}.
+  \item Pour minimiser les pertes: ajouter une option \texttt{--keep-empty-target-rows} (actuellement absente).
+  \item Pour stabiliser les runs QC: reduire \texttt{--workers}, augmenter \texttt{--retries}, relancer uniquement \texttt{--only-status ERROR}.
+  \item Pour auditabilite: produire un CSV des IDs supprimes par categorie de filtre.
+  \item Pour hygiene dependances: supprimer \texttt{python-dotenv} de requirements ou l utiliser explicitement.
+\end{enumerate}
+
+\section{Commandes de reproduction}
+\subsection{QC principal silver}
+\begin{lstlisting}[language=bash]
+python check_and_correct_mt.py \
+  --input shards/silver_9k_shards/silver_shard_3.csv \
+  --output artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.csv \
+  --report artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.report.json
+\end{lstlisting}
+
+\subsection{Cleaning silver (mode strict par defaut)}
+\begin{lstlisting}[language=bash]
+python clean_silver_shard_3_corrected.py \
+  --input artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.csv \
+  --output-dir artifacts/silver_shard_3_cleaned \
+  --output-name silver_shard_3.corrected.cleaned.csv
+\end{lstlisting}
+
+\subsection{Cleaning gold en gardant MSA-Darija}
+\begin{lstlisting}[language=bash]
+python clean_silver_shard_3_corrected.py \
+  --input artifacts/gold_shard_3_merge/gold_shard_3.corrected.merged.csv \
+  --output-dir artifacts/gold_shard_3_cleaned \
+  --output-name gold_shard_3.corrected.cleaned.csv \
+  --keep-msa-darija-leakage --skip-dummy-demo
+\end{lstlisting}
+
+\section{Appendice A: extraits JSON utiles}
+\subsection{QC summary (silver)}
+\begin{lstlisting}[language=json]
+{
+  "total_rows": 9005,
+  "processed_rows": 9005,
+  "changed_rows": 8856,
+  "error_rows": 4,
+  "total_prompt_tokens": 8839538,
+  "total_completion_tokens": 3395880,
+  "estimated_cost_usd": 8.969223
+}
+\end{lstlisting}
+
+\subsection{Cleaning summary (silver strict)}
+\begin{lstlisting}[language=json]
+{
+  "input_rows": 9005,
+  "dropped_rows": 175,
+  "dropped_metadata_rows": 1,
+  "dropped_msa_darija_rows": 163,
+  "dropped_error_status_rows": 4,
+  "dropped_empty_rows": 7,
+  "output_rows": 8830
+}
+\end{lstlisting}
+
+\subsection{Cleaning summary (gold keep-msa-darija-leakage)}
+\begin{lstlisting}[language=json]
+{
+  "input_rows": 1000,
+  "dropped_rows": 21,
+  "dropped_msa_darija_rows": 0,
+  "dropped_empty_rows": 21,
+  "output_rows": 979
+}
+\end{lstlisting}
+
+\end{document}

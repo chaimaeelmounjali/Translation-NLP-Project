@@ -1,0 +1,43 @@
+\babel@toc {french}{}\relax 
+\contentsline {section}{\numberline {1}Objectif du rapport}{3}{section.1}%
+\contentsline {section}{\numberline {2}Perimetre et artefacts analyses}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Scripts principaux}{3}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Rapports JSON utilises}{3}{subsection.2.2}%
+\contentsline {section}{\numberline {3}Bibliotheques et dependances}{3}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Dependances declarees (requirements.txt)}{3}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Imports effectifs dans les scripts}{3}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Script 1: check\_and\_correct\_mt.py}{4}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Role}{4}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Architecture technique}{4}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Parametres CLI majeurs}{4}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}Resultats QC (silver shard 3)}{4}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}Problemes observes sur le QC}{5}{subsection.4.5}%
+\contentsline {section}{\numberline {5}Script 2: clean\_silver\_shard\_3\_corrected.py}{5}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Role}{5}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Nettoyages appliques (detail fonctionnel)}{5}{subsection.5.2}%
+\contentsline {subsubsection}{\numberline {5.2.1}Preprocessing global}{5}{subsubsection.5.2.1}%
+\contentsline {subsubsection}{\numberline {5.2.2}Nettoyage par langue}{5}{subsubsection.5.2.2}%
+\contentsline {subsubsection}{\numberline {5.2.3}Filtres de lignes}{6}{subsubsection.5.2.3}%
+\contentsline {subsubsection}{\numberline {5.2.4}Post-clean quality fixes}{6}{subsubsection.5.2.4}%
+\contentsline {section}{\numberline {6}Resultats de cleaning (rapports JSON)}{6}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Silver cleaned (mode strict)}{6}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Gold cleaned (conservation MSA-Darija)}{6}{subsection.6.2}%
+\contentsline {section}{\numberline {7}Resultat intermediaire merge gold}{7}{section.7}%
+\contentsline {section}{\numberline {8}Interpretation des resultats EDA comparatifs}{7}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Vue d ensemble volumes et retention}{7}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Evolution des statuts}{7}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Taux de changement texte (source vs cleaned)}{8}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}Longueur des textes et outliers}{8}{subsection.8.4}%
+\contentsline {section}{\numberline {9}Pipeline global du projet}{8}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Pipeline fonctionnel}{8}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Pipeline resume}{9}{subsection.9.2}%
+\contentsline {section}{\numberline {10}Problemes techniques constates}{9}{section.10}%
+\contentsline {section}{\numberline {11}Recommandations}{9}{section.11}%
+\contentsline {section}{\numberline {12}Commandes de reproduction}{9}{section.12}%
+\contentsline {subsection}{\numberline {12.1}QC principal silver}{9}{subsection.12.1}%
+\contentsline {subsection}{\numberline {12.2}Cleaning silver (mode strict par defaut)}{10}{subsection.12.2}%
+\contentsline {subsection}{\numberline {12.3}Cleaning gold en gardant MSA-Darija}{10}{subsection.12.3}%
+\contentsline {section}{\numberline {13}Appendice A: extraits JSON utiles}{10}{section.13}%
+\contentsline {subsection}{\numberline {13.1}QC summary (silver)}{10}{subsection.13.1}%
+\contentsline {subsection}{\numberline {13.2}Cleaning summary (silver strict)}{10}{subsection.13.2}%
+\contentsline {subsection}{\numberline {13.3}Cleaning summary (gold keep-msa-darija-leakage)}{10}{subsection.13.3}%

@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-04-13T08:57:38.459854+00:00",
+  "total_rows_processed": 4499,
+  "removed_rows": 2,
+  "cleaned_rows": 3442,
+  "flagged_rows": 1055,
+  "modified_rows": 4499,
+  "issue_summary": {
+    "flagged_cross_darija_arabizi_incoherence": 254,
+    "flagged_langid_darija_arabic_contains_latin": 790,
+    "flagged_langid_msa_contains_latin": 610,
+    "flagged_langid_arabizi_contains_arabic": 4,
+    "removed_word_count_out_of_bounds": 2,
+    "flagged_length_discrepancy": 1
+  },
+  "column_modification_summary": {
+    "darija_arabic": 4189,
+    "darija_arabizi": 2602,
+    "english": 4463,
+    "modern_standard_arabic": 4372
+  },
+  "length_discrepancy_thresholds": {
+    "char_ratio_threshold": 8.0,
+    "word_ratio_threshold": 6.0,
+    "min_chars_for_ratio": 3
+  },
+  "input_csv": "shards\\corrected_gold_shard_3\\the_first_500.corrected.csv",
+  "output_csv": "artifacts\\gold_shard_3_cleaned_no_sw\\gold_shard_3.corrected.cleaned.no_sw.csv",
+  "report_json": "artifacts\\gold_shard_3_cleaned_no_sw\\cleaning_report.no_sw.json",
+  "rows_written_to_output_csv": 4499,
+  "stopword_settings": {
+    "english_enabled": false,
+    "arabic_enabled": false,
+    "arabizi_enabled": false,
+    "english_count": 58,
+    "arabic_count": 32,
+    "arabizi_count": 21,
+    "english_add_arg": "",
+    "arabic_add_arg": "",
+    "arabizi_add_arg": "",
+    "english_stopwords_file": "",
+    "arabic_stopwords_file": "",
+    "arabizi_stopwords_file": ""
+  },
+  "advanced_normalization_settings": {
+    "cleaning_profile": "strict",
+    "arabic_final_taa_mode": "haa",
+    "darija_g_standard": "ڭ",
+    "darija_v_standard": "ف",
+    "arabizi_kh_standard": "kh",
+    "laugh_mode": "token",
+    "laugh_token": "<LAUGH>",
+    "normalize_hamza": true,
+    "normalize_arabizi_prefixes": true,
+    "normalize_darija_prefixes": true,
+    "expand_english_contractions": true,
+    "apply_basic_english_spell_fixes": true,
+    "min_words_per_field": 2,
+    "max_words_per_field": 150,
+    "missing_value_policy": "flag"
+  }
+}

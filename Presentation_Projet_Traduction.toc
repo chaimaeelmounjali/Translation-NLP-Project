@@ -1,0 +1,8 @@
+\babel@toc {french}{}\relax 
+\beamer@sectionintoc {1}{Introduction et problematique}{3}{0}{1}
+\beamer@sectionintoc {2}{Vue d'ensemble du pipeline}{6}{0}{2}
+\beamer@sectionintoc {3}{Role de chaque script}{7}{0}{3}
+\beamer@sectionintoc {4}{Resultats et points forts}{12}{0}{4}
+\beamer@sectionintoc {5}{Recommandations MLOps}{15}{0}{5}
+\beamer@sectionintoc {6}{Pistes IA / ML / Deep Learning}{17}{0}{6}
+\beamer@sectionintoc {7}{Conclusion}{19}{0}{7}

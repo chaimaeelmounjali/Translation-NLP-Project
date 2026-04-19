@@ -1,28 +1,13 @@
 #!/usr/bin/env python3
 """
-Advanced multilingual corpus cleaning for MariNova.
+Production-ready NLP cleaning pipeline for corrected silver_shard_3 data.
 
-This script upgrades a multilingual CSV from silver quality to a strict,
-production-oriented gold-ready format.
-
-Input columns expected exactly:
-[
-    'data_id',
-    'id',
-    'classe',
-    'darija_arabic',
-    'darija_arabizi',
-    'english',
-    'modern_standard_arabic',
-    'english_word_count',
-    'status',
-    'qc_changed_fields',
-    'qc_notes',
-]
-
-Outputs:
-1) Cleaned CSV with status values in {CLEAN, FLAGGED, REMOVED}
-2) JSON report with processing summary and issue counts
+This script demonstrates the pipeline with a dummy DataFrame, then applies
+the same processing to a CSV file containing at least these columns:
+  - darija_arabic
+  - darija_arabizi
+  - english
+  - modern_standard_arabic
 """
 
 from __future__ import annotations
@@ -30,143 +15,245 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import logging
 import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
+import nltk
 import pandas as pd
-from tqdm import tqdm
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer, WordNetLemmatizer
 
 
-EXPECTED_COLUMNS = [
-    "data_id",
-    "id",
-    "classe",
-    "darija_arabic",
-    "darija_arabizi",
-    "english",
-    "modern_standard_arabic",
-    "english_word_count",
-    "status",
-    "qc_changed_fields",
-    "qc_notes",
-]
-
-TEXT_COLUMNS = [
+TARGET_COLUMNS = [
     "darija_arabic",
     "darija_arabizi",
     "english",
     "modern_standard_arabic",
 ]
+QC_COLUMNS = ("qc_changed_fields", "qc_notes")
 
-STATUS_CLEAN = "CLEAN"
-STATUS_FLAGGED = "FLAGGED"
-STATUS_REMOVED = "REMOVED"
-
-
-HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
-ARTIFACT_PATTERN = re.compile(r"(?i)(?:\[unk\]|<unk>|@-@|@=@)")
-MULTISPACE_PATTERN = re.compile(r"\s+")
-SPACE_BEFORE_PUNCT_PATTERN = re.compile(r"\s+([,.;:!?،؛؟])")
-CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+GLOBAL_ARTIFACT_PATTERN = re.compile(r"\s*(?:<unk>|@-@)\s*")
 URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", flags=re.IGNORECASE)
-EMAIL_PATTERN = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b", flags=re.IGNORECASE)
+WHITESPACE_PATTERN = re.compile(r"\s+")
+ISOLATED_DIGITS_PATTERN = re.compile(r"(?<![a-zA-Z])[0-9]+(?![a-zA-Z])")
+LATIN_ALNUM_SPACE_PATTERN = re.compile(r"[^a-z0-9\s]")
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
+MARKDOWN_INLINE_CODE_PATTERN = re.compile(r"`{1,3}[^`]+`{1,3}")
 MENTION_PATTERN = re.compile(r"(?<!\w)@[A-Za-z0-9_]+")
-HASHTAG_PATTERN = re.compile(r"(?<!\w)#[A-Za-z0-9_\u0600-\u06FF]+")
-INVISIBLE_CHAR_PATTERN = re.compile(r"[\u200b\u200c\u200d\u200e\u200f\ufeff\u2060]")
-MOJIBAKE_HINT_PATTERN = re.compile(r"(?:Ã.|Â.|â.|Ø.|Ù.)")
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\u2600-\u26FF"
+    "\u2700-\u27BF"
+    "]+"
+)
+TARGET_COLUMNS_COMMA = ",".join(TARGET_COLUMNS).lower()
+TARGET_COLUMNS_SEMICOLON = ";".join(TARGET_COLUMNS).lower()
+METADATA_ACTION_KEYWORDS = (
+    "corrected",
+    "removed",
+    "adjusted",
+    "fixed",
+    "improved",
+    "faithful",
+    "natural",
+    "mistranslation",
+    "spelling",
+)
+METADATA_LANGUAGE_KEYWORDS = (
+    "darija",
+    "arabizi",
+    "english",
+    "msa",
+    "modern standard arabic",
+    "mt artifact",
+    "mt artifacts",
+)
+DARIJA_LEAKAGE_MARKERS = {
+    "ديال",
+    "بزاف",
+    "واش",
+    "غادي",
+    "حيت",
+    "كاين",
+    "مازال",
+    "دابا",
+    "هاد",
+    "داك",
+    "علاش",
+    "فين",
+    "باش",
+    "حنا",
+}
+PLACEHOLDER_TERMS_BY_COLUMN = {
+    "darija_arabic": {
+        "كلمه غىر مفهومه",
+        "كلمة غير مفهومة",
+        "اسم قديم",
+        "اسم جديد",
+    },
+    "darija_arabizi": {
+        "kalima ghair mafhuma",
+        "ism qadim",
+        "ism jadid",
+    },
+    "english": {
+        "kalima ghair mafhuma",
+    },
+    "modern_standard_arabic": {
+        "كلمه غىر مفهومه",
+        "كلمة غير مفهومة",
+        "اسم قديم",
+        "اسم جديد",
+    },
+}
 
-ENGLISH_REPEAT_PATTERN = re.compile(r"([a-z])\1{2,}")
-ARABIZI_REPEAT_PATTERN = re.compile(r"([a-z])\1{2,}")
-ARABIC_REPEAT_PATTERN = re.compile(r"([\u0621-\u064A\u0671\u06A4\u06AD\u06AF\u06BA\u06C0\u06D2])\1{2,}")
-ENGLISH_ABBREVIATION_PATTERN = re.compile(r"\b(?:[A-Za-z]\.){2,}[A-Za-z]?\b")
-ARABIC_LETTER_PATTERN = re.compile(r"[\u0600-\u06FF]")
-LATIN_LETTER_PATTERN = re.compile(r"[A-Za-z]")
-ARABIC_LAUGH_PATTERN = re.compile(r"(?:ه){3,}")
-LATIN_LAUGH_PATTERN = re.compile(r"(?:ha){2,}|h{3,}", flags=re.IGNORECASE)
-ARABIC_WORD_PATTERN = re.compile(r"\b[\u0621-\u064A]{2,}\b")
-
+# Arabic diacritics (Tashkeel) and related marks.
 ARABIC_DIACRITICS_PATTERN = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]")
-ARABIC_TATWEEL_PATTERN = re.compile(r"\u0640+")
-ARABIC_ALEF_VARIANTS_PATTERN = re.compile(r"[\u0622\u0623\u0625\u0671]")
-ARABIC_END_TA_MARBUTA_PATTERN = re.compile(r"ة\b")
-ARABIC_END_ALIF_MAKSURA_PATTERN = re.compile(r"ى\b")
+TATWEEL_PATTERN = re.compile(r"\u0640")
+ALEF_VARIANTS_PATTERN = re.compile(r"[\u0622\u0623\u0625\u0671]")
+NON_ARABIC_PATTERN = re.compile(r"[^\u0621-\u063A\u0641-\u064A\u0649\s]")
 
-
-QUOTE_TRANSLATION_TABLE = str.maketrans(
-    {
-        "\u2018": "'",
-        "\u2019": "'",
-        "\u201A": "'",
-        "\u201B": "'",
-        "\u2032": "'",
-        "\u0060": "'",
-        "\u00B4": "'",
-        "\u201C": '"',
-        "\u201D": '"',
-        "\u201E": '"',
-        "\u00AB": '"',
-        "\u00BB": '"',
-    }
-)
-
-
-MOJIBAKE_REPLACEMENTS = {
-    "\ufeff": " ",
-    "\u200b": " ",
-    "\u200c": " ",
-    "\u200d": " ",
-    "\ufffd": " ",
+DEFAULT_DARIJA_STOPWORDS = {
+    "ف",
+    "في",
+    "من",
+    "على",
+    "و",
+    "يا",
+    "هاد",
+    "داك",
+    "ديال",
+    "ما",
+    "كي",
+    "باش",
+    "مع",
+    "الى",
+    "إلى",
 }
 
-
-PERSIAN_URDU_TO_ARABIC_TABLE = str.maketrans(
-    {
-        "ک": "ك",
-        "ی": "ي",
-        "ے": "ي",
-        "ۍ": "ي",
-        "ێ": "ي",
-        "ھ": "ه",
-        "ہ": "ه",
-        "ۀ": "ه",
-        "ؤ": "ؤ",
-        "ئ": "ئ",
-        "پ": "ب",
-        "چ": "ج",
-        "ژ": "ز",
-    }
-)
-
-
-ENGLISH_CONTRACTION_FIXES = {
-    r"\bdont\b": "don't",
-    r"\bcant\b": "can't",
-    r"\bwont\b": "won't",
-    r"\bisnt\b": "isn't",
-    r"\baren't\b": "aren't",
-    r"\barent\b": "aren't",
-    r"\bdoesnt\b": "doesn't",
-    r"\bdidnt\b": "didn't",
-    r"\bshouldnt\b": "shouldn't",
-    r"\bcouldnt\b": "couldn't",
-    r"\bwouldnt\b": "wouldn't",
-    r"\bim\b": "i'm",
-    r"\bive\b": "i've",
-    r"\bill\b": "i'll",
-    r"\byoure\b": "you're",
-    r"\btheyre\b": "they're",
-    r"\bweve\b": "we've",
-    r"\bthats\b": "that's",
+DEFAULT_ARABIZI_STOPWORDS = {
+    "f",
+    "fi",
+    "men",
+    "mn",
+    "w",
+    "dyal",
+    "dial",
+    "m3a",
+    "ma",
+    "ila",
+    "l",
+    "b",
+    "3la",
 }
 
+FALLBACK_ENGLISH_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "has",
+    "he",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "that",
+    "the",
+    "to",
+    "was",
+    "were",
+    "will",
+    "with",
+    "this",
+    "these",
+    "those",
+    "or",
+    "if",
+    "but",
+    "than",
+    "then",
+    "there",
+    "their",
+    "they",
+    "them",
+    "we",
+    "our",
+    "you",
+    "your",
+    "i",
+    "me",
+    "my",
+    "mine",
+    "she",
+    "her",
+    "his",
+    "him",
+    "not",
+    "no",
+    "do",
+    "does",
+    "did",
+    "have",
+    "had",
+    "been",
+}
 
-ENGLISH_CONTRACTION_EXPANSIONS = {
+FALLBACK_ARABIC_STOPWORDS = {
+    "في",
+    "من",
+    "على",
+    "الى",
+    "إلى",
+    "عن",
+    "ما",
+    "لا",
+    "لم",
+    "لن",
+    "هو",
+    "هي",
+    "هم",
+    "هن",
+    "هذا",
+    "هذه",
+    "ذلك",
+    "تلك",
+    "هناك",
+    "ثم",
+    "او",
+    "أو",
+    "اذا",
+    "إذا",
+    "كان",
+    "كانت",
+    "يكون",
+    "يمكن",
+    "قد",
+    "لقد",
+}
+
+ENGLISH_CONTRACTIONS = {
     "can't": "cannot",
     "won't": "will not",
     "don't": "do not",
@@ -176,10 +263,20 @@ ENGLISH_CONTRACTION_EXPANSIONS = {
     "aren't": "are not",
     "wasn't": "was not",
     "weren't": "were not",
+    "haven't": "have not",
+    "hasn't": "has not",
+    "hadn't": "had not",
+    "wouldn't": "would not",
+    "shouldn't": "should not",
+    "couldn't": "could not",
+    "mustn't": "must not",
     "i'm": "i am",
     "you're": "you are",
     "we're": "we are",
     "they're": "they are",
+    "it's": "it is",
+    "that's": "that is",
+    "there's": "there is",
     "i've": "i have",
     "you've": "you have",
     "we've": "we have",
@@ -188,1393 +285,966 @@ ENGLISH_CONTRACTION_EXPANSIONS = {
     "you'll": "you will",
     "we'll": "we will",
     "they'll": "they will",
+    "i'd": "i would",
+    "you'd": "you would",
+    "we'd": "we would",
+    "they'd": "they would",
 }
 
-
-COMMON_ENGLISH_TYPO_FIXES = {
-    "teh": "the",
-    "definitly": "definitely",
-    "recieve": "receive",
-    "adress": "address",
-    "becuase": "because",
-    "seperate": "separate",
-    "wierd": "weird",
-    "langauge": "language",
-    "transaltion": "translation",
-    "goverment": "government",
+DARIJA_VARIANT_MAP = {
+    "دىل": "دىال",
+    "دىلنا": "دىالنا",
+    "ديل": "ديال",
+    "ديلنا": "ديالنا",
+    "بزااف": "بزاف",
+    "بززاف": "بزاف",
+    "علاش": "علاش",
 }
 
-
-ARABIZI_VARIANT_PATTERNS: Sequence[Tuple[re.Pattern[str], str]] = (
-    (re.compile(r"\bd4\b"), "d"),
-    (re.compile(r"(?<=\w)0(?=\w)"), "o"),
-    (re.compile(r"\bwahed\b"), "wa7d"),
-    (re.compile(r"\bwahd\b"), "wa7d"),
-    (re.compile(r"\bel\b"), "l"),
+ARABIC_PROCLITICS = (
+    "وال",
+    "بال",
+    "كال",
+    "فال",
+    "لل",
+    "ال",
+    "و",
+    "ف",
+    "ب",
+    "ك",
+    "ل",
+    "س",
+)
+ARABIC_SINGLE_PREFIX_HINTS = set("المنيتس")
+ARABIC_ENCLITICS = (
+    "كما",
+    "كم",
+    "كن",
+    "هما",
+    "هم",
+    "هن",
+    "ها",
+    "نا",
+    "ني",
+    "ه",
+    "ك",
+    "ي",
 )
 
+ARABIZI_DIGIT_TO_ARABIC = {
+    "2": "ء",
+    "3": "ع",
+    "5": "خ",
+    "7": "ح",
+    "8": "غ",
+    "9": "ق",
+}
+
+ARABIZI_DIGRAPH_TO_ARABIC = {
+    "kh": "خ",
+    "gh": "غ",
+    "ch": "ش",
+    "sh": "ش",
+    "th": "ث",
+    "dh": "ذ",
+}
+
+ARABIZI_CHAR_TO_ARABIC = {
+    "a": "ا",
+    "b": "ب",
+    "c": "ك",
+    "d": "د",
+    "e": "ي",
+    "f": "ف",
+    "g": "ج",
+    "h": "ه",
+    "i": "ي",
+    "j": "ج",
+    "k": "ك",
+    "l": "ل",
+    "m": "م",
+    "n": "ن",
+    "o": "و",
+    "p": "ب",
+    "q": "ق",
+    "r": "ر",
+    "s": "س",
+    "t": "ت",
+    "u": "و",
+    "v": "ف",
+    "w": "و",
+    "x": "خ",
+    "y": "ي",
+    "z": "ز",
+}
+
 
 @dataclass(frozen=True)
-class LengthCheckConfig:
-    """Thresholds to detect suspiciously imbalanced multilingual rows."""
-
-    char_ratio_threshold: float = 8.0
-    word_ratio_threshold: float = 6.0
-    min_chars_for_ratio: int = 3
-
-
-@dataclass(frozen=True)
-class StopwordConfig:
-    """Toggle stopword removal per language family."""
-
-    remove_english: bool = True
-    remove_arabic: bool = True
-    remove_arabizi: bool = True
-
-
-@dataclass(frozen=True)
-class AdvancedNormalizationConfig:
-    """Advanced normalization rules configurable from CLI."""
-
-    arabic_final_taa_mode: str = "haa"  # haa | taa | keep
-    darija_g_standard: str = "ڭ"        # ڭ | گ | غ
-    darija_v_standard: str = "ف"        # ف | ڤ
-    arabizi_kh_standard: str = "kh"     # kh | 5 | keep
-    laugh_mode: str = "token"           # token | reduce | keep
-    laugh_token: str = "<LAUGH>"
-    normalize_hamza: bool = True
-    normalize_arabizi_prefixes: bool = True
-    normalize_darija_prefixes: bool = True
+class CleaningOptions:
+    english_normalization: str = "none"
     expand_english_contractions: bool = True
-    apply_basic_english_spell_fixes: bool = True
-    min_words_per_field: int = 2
-    max_words_per_field: int = 150
-    missing_value_policy: str = "flag"  # flag | remove
+    split_arabic_clitics: bool = False
+    split_darija_negation: bool = False
+    use_light_arabic_stemming: bool = False
+    transliterate_arabizi_to_arabic: bool = False
+    arabizi_drop_vowels: bool = False
+    arabizi_max_char_repeat: int = 2
+    emoji_replacement: str = " "
 
 
-DEFAULT_ENGLISH_STOPWORDS: Set[str] = {
-    "a", "an", "and", "are", "as", "at", "be", "been", "being", "by", "for",
-    "from", "had", "has", "have", "he", "her", "hers", "him", "his", "i", "in",
-    "is", "it", "its", "me", "my", "of", "on", "or", "our", "ours", "she", "that",
-    "the", "their", "theirs", "them", "there", "these", "they", "this", "those", "to",
-    "was", "we", "were", "what", "when", "where", "which", "who", "why", "will", "with",
-    "you", "your", "yours",
-}
+def load_stopwords_or_fallback(language: str, fallback_values: Iterable[str]) -> Set[str]:
+    """Load NLTK stopwords; fallback to local defaults if unavailable."""
+    try:
+        return set(stopwords.words(language))
+    except LookupError:
+        try:
+            nltk.download("stopwords", quiet=True)
+            return set(stopwords.words(language))
+        except Exception:
+            return set(fallback_values)
 
 
-DEFAULT_ARABIC_STOPWORDS: Set[str] = {
-    "في", "من", "الى", "إلى", "على", "عن", "ما", "لا", "لم", "لن", "هو", "هي",
-    "هم", "هذا", "هذه", "ذلك", "تلك", "هناك", "ثم", "او", "أو", "اذا", "إذا", "كان",
-    "كانت", "يكون", "قد", "لقد", "ديال", "هاد", "داك", "حيت", "غادي", "واش", "بزاف",
-}
+def load_wordnet_lemmatizer_if_available() -> WordNetLemmatizer | None:
+    """Load WordNet resources; return None if unavailable."""
+    try:
+        nltk.data.find("corpora/wordnet")
+    except LookupError:
+        try:
+            nltk.download("wordnet", quiet=True)
+            nltk.download("omw-1.4", quiet=True)
+        except Exception:
+            return None
+    try:
+        return WordNetLemmatizer()
+    except Exception:
+        return None
 
 
-DEFAULT_ARABIZI_STOPWORDS: Set[str] = {
-    "f", "fi", "mn", "men", "3la", "w", "ma", "la", "ila", "l", "b", "dyal",
-    "dial", "had", "dak", "hadi", "hada", "ghadi", "bzaf", "wach", "7it",
-}
-
-
-def parse_stopword_argument(raw_value: str | None) -> Set[str]:
-    """Parse comma-separated stopwords passed from CLI."""
-    if not raw_value:
-        return set()
-    return {tok.strip() for tok in raw_value.split(",") if tok.strip()}
-
-
-def load_stopwords_from_file(path_value: str | None) -> Set[str]:
-    """Load one stopword per line from a file, ignoring blank lines/comments."""
-    if not path_value:
-        return set()
-
-    path = Path(path_value)
-    if not path.exists():
-        logging.warning("Stopword file not found: %s", path)
-        return set()
-
-    loaded: Set[str] = set()
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        loaded.add(stripped)
-    return loaded
-
-
-def normalize_english_stopword(token: str) -> str:
-    """Normalize stopword token with the same steps used for English text."""
-    default_cfg = AdvancedNormalizationConfig()
-    normalized = global_clean_text(token).lower()
-    normalized = enforce_latin_punctuation(normalized)
-    normalized = normalize_english_abbreviations(normalized)
-    normalized = fix_common_english_contractions(normalized)
-    if default_cfg.expand_english_contractions:
-        normalized = expand_english_contractions(normalized)
-    if default_cfg.apply_basic_english_spell_fixes:
-        normalized = apply_basic_english_spelling_fixes(normalized)
-    normalized = ENGLISH_REPEAT_PATTERN.sub(r"\1", normalized)
-    return normalize_whitespace(normalized)
-
-
-def normalize_arabizi_stopword(token: str) -> str:
-    """Normalize stopword token with the same steps used for Arabizi text."""
-    default_cfg = AdvancedNormalizationConfig()
-    normalized = global_clean_text(token).lower()
-    normalized = enforce_latin_punctuation(normalized)
-    normalized = normalize_arabizi_variants(normalized, advanced_config=default_cfg)
-    normalized = ARABIZI_REPEAT_PATTERN.sub(r"\1", normalized)
-    return normalize_whitespace(normalized)
-
-
-def normalize_arabic_stopword(token: str) -> str:
-    """Normalize stopword token with the same steps used for Arabic script text."""
-    default_cfg = AdvancedNormalizationConfig()
-    normalized = global_clean_text(token)
-    normalized = normalize_arabic_script(
-        normalized,
-        advanced_config=default_cfg,
-        is_darija=False,
-    )
-    return normalize_whitespace(normalized)
-
-
-def build_stopword_set(base: Set[str], extra_inline: str | None, extra_file: str | None, normalizer) -> Set[str]:
-    """Build final normalized stopword set from defaults + CLI additions."""
-    raw_values = set(base)
-    raw_values.update(parse_stopword_argument(extra_inline))
-    raw_values.update(load_stopwords_from_file(extra_file))
-
-    normalized: Set[str] = set()
-    for token in raw_values:
-        cleaned = normalizer(token)
-        if cleaned:
-            # Keep multi-token entries by splitting after normalization.
-            normalized.update(part for part in cleaned.split() if part)
-    return normalized
-
-
-def remove_stopwords(text: str, stopwords: Set[str]) -> str:
-    """Drop stopwords token-by-token from already-normalized text."""
-    if not text or not stopwords:
-        return text
-    kept = [tok for tok in text.split() if tok not in stopwords]
-    return " ".join(kept)
-
-
-def setup_logging(level: str) -> None:
-    """Configure project-level logging format and level."""
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s | %(levelname)s | %(message)s",
-    )
-
-
-def safe_text(value: object) -> str:
-    """Return empty string for missing values; cast any other value to string."""
+def as_text(value: object) -> str:
+    """Safely convert missing/non-string values to a normalized string."""
     if pd.isna(value):
         return ""
     return str(value)
 
 
 def normalize_whitespace(text: str) -> str:
-    """Collapse whitespace and remove extra spaces before punctuation."""
-    text = MULTISPACE_PATTERN.sub(" ", text).strip()
-    text = SPACE_BEFORE_PUNCT_PATTERN.sub(r"\1", text)
-    return text
+    return WHITESPACE_PATTERN.sub(" ", text).strip()
 
 
-def normalize_quotes_and_apostrophes(text: str) -> str:
-    """Unify quote and apostrophe variants into standard ASCII forms."""
-    return text.translate(QUOTE_TRANSLATION_TABLE)
+def strip_html_tags(text: str) -> str:
+    return HTML_TAG_PATTERN.sub(" ", text)
 
 
-def strip_latin_accents(text: str) -> str:
-    """Remove combining accents (useful for noisy Arabizi/French keyboard input)."""
-    normalized = unicodedata.normalize("NFKD", text)
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
-
-
-def remove_encoding_noise(text: str) -> str:
-    """Remove common replacement and zero-width characters from encoding issues."""
-    cleaned = text
-    for bad, replacement in MOJIBAKE_REPLACEMENTS.items():
-        cleaned = cleaned.replace(bad, replacement)
-    cleaned = CONTROL_CHAR_PATTERN.sub(" ", cleaned)
-    cleaned = INVISIBLE_CHAR_PATTERN.sub(" ", cleaned)
+def strip_markdown(text: str) -> str:
+    cleaned = MARKDOWN_LINK_PATTERN.sub(r"\1", text)
+    cleaned = MARKDOWN_INLINE_CODE_PATTERN.sub(" ", cleaned)
+    cleaned = re.sub(r"(^|\s)[>#]+", " ", cleaned)
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+    cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
+    cleaned = re.sub(r"_([^_]+)_", r"\1", cleaned)
+    cleaned = cleaned.replace("~", " ")
     return cleaned
 
 
-def maybe_fix_mojibake(text: str) -> str:
-    """Try repairing common UTF-8/latin1 mojibake when hints are detected."""
-    if not text or not MOJIBAKE_HINT_PATTERN.search(text):
-        return text
-
-    try:
-        repaired = text.encode("latin-1", errors="ignore").decode("utf-8", errors="ignore")
-    except Exception:
-        return text
-
-    if not repaired:
-        return text
-
-    old_hits = len(MOJIBAKE_HINT_PATTERN.findall(text))
-    new_hits = len(MOJIBAKE_HINT_PATTERN.findall(repaired))
-    if new_hits < old_hits:
-        return repaired
-    return text
+def remove_mentions(text: str) -> str:
+    return MENTION_PATTERN.sub(" ", text)
 
 
-def remove_web_noise(text: str) -> str:
-    """Remove URLs, emails, @mentions and #hashtags."""
-    cleaned = URL_PATTERN.sub(" ", text)
-    cleaned = EMAIL_PATTERN.sub(" ", cleaned)
-    cleaned = MENTION_PATTERN.sub(" ", cleaned)
-    cleaned = HASHTAG_PATTERN.sub(" ", cleaned)
-    return cleaned
+def replace_emojis(text: str, replacement: str = " ") -> str:
+    return EMOJI_PATTERN.sub(replacement, text)
 
 
-def normalize_laughter(text: str, is_arabic_script: bool, mode: str, laugh_token: str) -> str:
-    """Normalize laugh patterns either to token, reduced form, or keep unchanged."""
-    if mode == "keep":
-        return text
-
-    pattern = ARABIC_LAUGH_PATTERN if is_arabic_script else LATIN_LAUGH_PATTERN
-    if mode == "token":
-        return pattern.sub(f" {laugh_token} ", text)
-    if mode == "reduce":
-        replacement = "هه" if is_arabic_script else "hh"
-        return pattern.sub(replacement, text)
-    return text
+def remove_global_artifacts(text: object) -> str:
+    """Remove exact machine artifacts globally from all target columns."""
+    raw = as_text(text)
+    cleaned = GLOBAL_ARTIFACT_PATTERN.sub(" ", raw)
+    return normalize_whitespace(cleaned)
 
 
-def normalize_english_abbreviations(text: str) -> str:
-    """Normalize dotted abbreviations like U.S.A. -> USA."""
-
-    def _strip_dots(match: re.Match[str]) -> str:
-        return match.group(0).replace(".", "")
-
-    return ENGLISH_ABBREVIATION_PATTERN.sub(_strip_dots, text)
+def remove_urls(text: str) -> str:
+    return URL_PATTERN.sub(" ", text)
 
 
-def apply_basic_english_spelling_fixes(text: str) -> str:
-    """Apply basic typo corrections for common English misspellings."""
-    fixed_tokens: List[str] = []
+def strip_unicode_punctuation(text: str) -> str:
+    return "".join(
+        " " if unicodedata.category(char)[0] in {"P", "S"} else char
+        for char in text
+    )
+
+
+def strip_non_latin_alnum(text: str) -> str:
+    return LATIN_ALNUM_SPACE_PATTERN.sub(" ", text)
+
+
+def apply_universal_text_cleanup(text: object, emoji_replacement: str = " ") -> str:
+    cleaned = as_text(text)
+    cleaned = html.unescape(cleaned)
+    cleaned = remove_global_artifacts(cleaned)
+    cleaned = strip_html_tags(cleaned)
+    cleaned = strip_markdown(cleaned)
+    cleaned = remove_urls(cleaned)
+    cleaned = remove_mentions(cleaned)
+    cleaned = replace_emojis(cleaned, replacement=emoji_replacement)
+    return normalize_whitespace(cleaned)
+
+
+def normalize_arabic_text(
+    text: object,
+    fold_ta_marbuta: bool,
+    fold_yeh: bool,
+) -> str:
+    """
+    Arabic normalization for MSA and Darija Arabic script.
+    - remove diacritics and tatweel
+    - Alef variants -> bare Alef
+    - optional Ta marbuta -> Ha folding
+    - optional Yaa -> Alef Maksura folding
+    - remove non-Arabic chars and punctuation
+    """
+    normalized = as_text(text)
+    normalized = ARABIC_DIACRITICS_PATTERN.sub("", normalized)
+    normalized = TATWEEL_PATTERN.sub("", normalized)
+    normalized = ALEF_VARIANTS_PATTERN.sub("ا", normalized)
+    if fold_ta_marbuta:
+        normalized = normalized.replace("ة", "ه")
+    if fold_yeh:
+        normalized = normalized.replace("ي", "ى")
+    normalized = NON_ARABIC_PATTERN.sub(" ", normalized)
+    return normalize_whitespace(normalized)
+
+
+def normalize_arabic_stopwords(
+    words: Iterable[str],
+    fold_ta_marbuta: bool,
+    fold_yeh: bool,
+) -> Set[str]:
+    normalized_words = set()
+    for word in words:
+        token = normalize_arabic_text(
+            word,
+            fold_ta_marbuta=fold_ta_marbuta,
+            fold_yeh=fold_yeh,
+        )
+        if token:
+            normalized_words.add(token)
+    return normalized_words
+
+
+def normalize_darija_variants(text: str) -> str:
+    tokens = text.split()
+    normalized_tokens = [DARIJA_VARIANT_MAP.get(tok, tok) for tok in tokens]
+    return " ".join(normalized_tokens)
+
+
+def split_arabic_clitics(text: str, split_negation: bool = False) -> str:
+    segmented: List[str] = []
     for token in text.split():
-        fixed_tokens.append(COMMON_ENGLISH_TYPO_FIXES.get(token, token))
-    return " ".join(fixed_tokens)
+        current = token
+
+        if split_negation and current.startswith("ما") and current.endswith("ش") and len(current) >= 5:
+            core = current[2:-1].strip()
+            segmented.append("ما")
+            if core:
+                segmented.append(core)
+            segmented.append("ش")
+            continue
+
+        prefixes: List[str] = []
+        for candidate in ARABIC_PROCLITICS:
+            if not current.startswith(candidate):
+                continue
+            if len(current) - len(candidate) < 3:
+                continue
+            if len(candidate) == 1 and len(current) >= 2 and current[1] not in ARABIC_SINGLE_PREFIX_HINTS:
+                continue
+
+            prefixes.append(candidate)
+            current = current[len(candidate) :]
+            break
+
+        suffix = ""
+        for candidate in ARABIC_ENCLITICS:
+            if len(current) - len(candidate) >= 2 and current.endswith(candidate):
+                suffix = candidate
+                current = current[: -len(candidate)]
+                break
+
+        segmented.extend(prefixes)
+        if current:
+            segmented.append(current)
+        if suffix:
+            segmented.append(suffix)
+
+    return " ".join(segmented)
+
+
+def light_arabic_stem_token(token: str) -> str:
+    prefixes = ("ال", "وال", "بال", "كال", "فال", "لل", "و", "ف", "ب", "ك", "ل")
+    suffixes = ("كما", "كم", "كن", "هما", "هم", "هن", "ها", "نا", "ني", "ات", "ون", "ين", "ة", "ه")
+
+    stemmed = token
+    for pref in prefixes:
+        if stemmed.startswith(pref) and len(stemmed) - len(pref) >= 3:
+            stemmed = stemmed[len(pref) :]
+            break
+    for suf in suffixes:
+        if stemmed.endswith(suf) and len(stemmed) - len(suf) >= 3:
+            stemmed = stemmed[: -len(suf)]
+            break
+    return stemmed
+
+
+def light_arabic_stem_tokens(tokens: Iterable[str]) -> List[str]:
+    return [light_arabic_stem_token(tok) for tok in tokens]
+
+
+def reduce_repeated_characters(text: str, max_repeats: int = 2) -> str:
+    if max_repeats < 1:
+        max_repeats = 1
+    pattern = re.compile(r"(.)\1{" + str(max_repeats) + r",}")
+    return pattern.sub(lambda match: match.group(1) * max_repeats, text)
+
+
+def drop_arabizi_vowels(text: str) -> str:
+    return re.sub(r"[aeiou]", "", text)
+
+
+def transliterate_arabizi_token_to_arabic(token: str) -> str:
+    lowered = token.lower()
+    for digraph, replacement in ARABIZI_DIGRAPH_TO_ARABIC.items():
+        lowered = lowered.replace(digraph, replacement)
+
+    output_chars: List[str] = []
+    for char in lowered:
+        if char in ARABIZI_DIGIT_TO_ARABIC:
+            output_chars.append(ARABIZI_DIGIT_TO_ARABIC[char])
+        elif char in ARABIZI_CHAR_TO_ARABIC:
+            output_chars.append(ARABIZI_CHAR_TO_ARABIC[char])
+        else:
+            output_chars.append(char)
+
+    return "".join(output_chars)
+
+
+def transliterate_arabizi_to_arabic(text: str) -> str:
+    tokens = [transliterate_arabizi_token_to_arabic(tok) for tok in text.split()]
+    return " ".join(tokens)
 
 
 def expand_english_contractions(text: str) -> str:
-    """Expand contractions to full forms (e.g., won't -> will not)."""
     expanded = text
-    for src, dst in sorted(ENGLISH_CONTRACTION_EXPANSIONS.items(), key=lambda kv: -len(kv[0])):
-        expanded = re.sub(rf"\b{re.escape(src)}\b", dst, expanded)
+    for contraction, replacement in sorted(ENGLISH_CONTRACTIONS.items(), key=lambda item: -len(item[0])):
+        expanded = re.sub(rf"\\b{re.escape(contraction)}\\b", replacement, expanded)
     return expanded
 
 
-def enforce_latin_punctuation(text: str) -> str:
-    """Convert Arabic punctuation to latin punctuation for latin-script columns."""
-    return text.replace("،", ",").replace("؛", ";").replace("؟", "?")
+def has_metadata_keywords(text: str) -> bool:
+    has_action = any(keyword in text for keyword in METADATA_ACTION_KEYWORDS)
+    has_language = any(keyword in text for keyword in METADATA_LANGUAGE_KEYWORDS)
+    return has_action and has_language
 
 
-def normalize_hamza_forms(text: str) -> str:
-    """Apply strict hamza normalization to reduce common variant spellings."""
-    normalized = text.replace("ؤ", "و").replace("ئ", "ي")
-    normalized = normalized.replace("ء", "")
-    return normalized
-
-
-def normalize_arabic_letter_variants(text: str) -> str:
-    """Normalize Persian/Urdu keyboard letters to Arabic baseline letters."""
-    return text.translate(PERSIAN_URDU_TO_ARABIC_TABLE)
-
-
-def normalize_darija_specific_letters(text: str, g_standard: str, v_standard: str) -> str:
-    """Unify Darija-specific grapheme choices for G and V families."""
-    normalized = text
-    if g_standard in {"ڭ", "گ", "غ"}:
-        normalized = normalized.replace("ڭ", g_standard).replace("گ", g_standard).replace("ڭ", g_standard)
-        # Requested by project checklist: optionally fold ghain into chosen G standard.
-        normalized = normalized.replace("غ", g_standard)
-
-    if v_standard == "ف":
-        normalized = normalized.replace("ڤ", "ف")
-    elif v_standard == "ڤ":
-        normalized = normalized.replace("ڥ", "ڤ")
-
-    return normalized
-
-
-def normalize_darija_prefix_attachment_arabic(text: str) -> str:
-    """Normalize spacing around attached one-letter Arabic prefixes (w/f/b/l)."""
-    return re.sub(r"\b([وفبل])\s+(ال[\u0621-\u064A]+)", r"\1\2", text)
-
-
-def normalize_arabizi_prefix_spacing(text: str) -> str:
-    """Normalize Arabizi prefix forms like f'ddar -> f ddar and l'mdina -> l mdina."""
-    normalized = re.sub(r"\b([wfbl])['’]([a-z0-9]{2,})\b", r"\1 \2", text)
-    normalized = normalized.replace("'", "")
-    return normalized
-
-
-def normalize_arabizi_kh_standard(text: str, kh_standard: str) -> str:
-    """Standardize kh sound notation between 'kh' and '5'."""
-    if kh_standard == "keep":
-        return text
-    if kh_standard == "kh":
-        # Keep numbers in other contexts; only replace likely letter-5 usage.
-        text = re.sub(r"\b5(?=[a-z])", "kh", text)
-        text = re.sub(r"(?<=[a-z])5\b", "kh", text)
-        text = re.sub(r"(?<=[a-z])5(?=[a-z])", "kh", text)
-        return text
-    if kh_standard == "5":
-        return text.replace("kh", "5")
-    return text
-
-
-def reduce_arabic_letter_repeats(text: str) -> str:
-    """Reduce exaggerated Arabic elongations (e.g., بزااااف -> بزاف)."""
-    return ARABIC_REPEAT_PATTERN.sub(r"\1", text)
-
-
-def detect_script_mismatch_issues(cleaned_texts: Dict[str, str]) -> List[str]:
-    """Heuristic script/lang mismatch checks across target columns."""
-    issues: List[str] = []
-
-    english = cleaned_texts.get("english", "")
-    arabizi = cleaned_texts.get("darija_arabizi", "")
-    darija_ar = cleaned_texts.get("darija_arabic", "")
-    msa = cleaned_texts.get("modern_standard_arabic", "")
-
-    if ARABIC_LETTER_PATTERN.search(english):
-        issues.append("flagged_langid_english_contains_arabic")
-    if ARABIC_LETTER_PATTERN.search(arabizi):
-        issues.append("flagged_langid_arabizi_contains_arabic")
-    if LATIN_LETTER_PATTERN.search(darija_ar):
-        issues.append("flagged_langid_darija_arabic_contains_latin")
-    if LATIN_LETTER_PATTERN.search(msa):
-        issues.append("flagged_langid_msa_contains_latin")
-
-    return issues
-
-
-def transliterate_arabizi_for_alignment(text: str) -> str:
-    """Rough transliteration for alignment checks only (not for final output text)."""
-    normalized = text.lower()
-    normalized = normalized.replace("kh", "خ").replace("gh", "غ").replace("sh", "ش").replace("ch", "ش")
-    normalized = normalized.replace("th", "ث").replace("dh", "ذ")
-
-    char_map = {
-        "2": "ء",
-        "3": "ع",
-        "5": "خ",
-        "6": "ط",
-        "7": "ح",
-        "8": "غ",
-        "9": "ق",
-        "a": "ا",
-        "b": "ب",
-        "d": "د",
-        "f": "ف",
-        "g": "ج",
-        "h": "ه",
-        "i": "ي",
-        "j": "ج",
-        "k": "ك",
-        "l": "ل",
-        "m": "م",
-        "n": "ن",
-        "o": "و",
-        "q": "ق",
-        "r": "ر",
-        "s": "س",
-        "t": "ت",
-        "u": "و",
-        "w": "و",
-        "y": "ي",
-        "z": "ز",
-    }
-
-    out_chars: List[str] = []
-    for ch in normalized:
-        out_chars.append(char_map.get(ch, ch))
-    out = "".join(out_chars)
-    out = re.sub(r"[^\u0621-\u064A\s]", " ", out)
-    return normalize_whitespace(out)
-
-
-def detect_cross_darija_arabizi_incoherence(cleaned_texts: Dict[str, str]) -> bool:
-    """Flag when Darija Arabic and Arabizi appear semantically disconnected."""
-    darija_ar = cleaned_texts.get("darija_arabic", "")
-    arabizi = cleaned_texts.get("darija_arabizi", "")
-
-    if len(darija_ar) < 12 or len(arabizi) < 12:
+def looks_like_metadata_value(value: object) -> bool:
+    text = normalize_whitespace(as_text(value)).lower()
+    if not text:
         return False
-
-    darija_tokens = set(ARABIC_WORD_PATTERN.findall(darija_ar))
-    arabizi_as_ar = transliterate_arabizi_for_alignment(arabizi)
-    arabizi_tokens = set(ARABIC_WORD_PATTERN.findall(arabizi_as_ar))
-
-    # Need enough lexical material to judge coherence.
-    if len(darija_tokens) < 3 or len(arabizi_tokens) < 3:
-        return False
-
-    overlap = darija_tokens.intersection(arabizi_tokens)
-    overlap_ratio = len(overlap) / max(1, min(len(darija_tokens), len(arabizi_tokens)))
-
-    return overlap_ratio < 0.08
+    if text in {TARGET_COLUMNS_COMMA, TARGET_COLUMNS_SEMICOLON}:
+        return True
+    if text.count(";") >= 3 and all(column in text for column in TARGET_COLUMNS):
+        return True
+    if sum(column in text for column in TARGET_COLUMNS) >= 3:
+        return True
+    if len(text.split()) >= 6 and has_metadata_keywords(text):
+        return True
+    return False
 
 
-def within_word_bounds(cleaned_texts: Dict[str, str], min_words: int, max_words: int) -> Tuple[bool, str]:
-    """Check whether each non-empty target field is within configured word bounds."""
-    violations: List[str] = []
-    for col, text in cleaned_texts.items():
-        if not text:
+def contains_darija_marker(text: object) -> bool:
+    tokens = set(normalize_whitespace(as_text(text)).split())
+    return any(marker in tokens for marker in DARIJA_LEAKAGE_MARKERS)
+
+
+def remove_placeholder_terms(text: str, placeholder_terms: Set[str]) -> Tuple[str, int]:
+    cleaned = text
+    removed_count = 0
+    for term in placeholder_terms:
+        pattern = re.compile(rf"(^|\s){re.escape(term)}(\s|$)", flags=re.IGNORECASE)
+        cleaned, replacements = pattern.subn(" ", cleaned)
+        removed_count += replacements
+    return normalize_whitespace(cleaned), removed_count
+
+
+def collapse_adjacent_duplicate_tokens(text: str) -> Tuple[str, int]:
+    tokens = text.split()
+    if not tokens:
+        return "", 0
+
+    collapsed = [tokens[0]]
+    removed = 0
+    for token in tokens[1:]:
+        # Skip suspicious adjacent duplicates but keep very short tokens
+        # because some abbreviations are legitimately repeated.
+        if token == collapsed[-1] and len(token) >= 3 and not token.isdigit():
+            removed += 1
             continue
-        wc = len(text.split())
-        if wc < min_words:
-            violations.append(f"{col}:too_short({wc})")
-        elif wc > max_words:
-            violations.append(f"{col}:too_long({wc})")
-
-    if violations:
-        return False, "; ".join(violations)
-    return True, ""
+        collapsed.append(token)
+    return " ".join(collapsed), removed
 
 
-def make_loose_signature(cleaned_texts: Dict[str, str]) -> Tuple[str, str, str, str]:
-    """Create punctuation-agnostic signatures to catch near-duplicate rows."""
+def apply_post_clean_quality_fixes(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    output = df.copy()
+    placeholder_removals = 0
+    duplicate_token_removals = 0
 
-    def _normalize(text: str) -> str:
-        lowered = text.lower()
-        lowered = re.sub(r"[^\w\u0600-\u06FF]+", " ", lowered)
-        lowered = normalize_whitespace(lowered)
-        return lowered
+    for col in columns:
+        placeholders = PLACEHOLDER_TERMS_BY_COLUMN.get(col, set())
+        fixed_values: List[str] = []
 
-    return (
-        _normalize(cleaned_texts["darija_arabic"]),
-        _normalize(cleaned_texts["darija_arabizi"]),
-        _normalize(cleaned_texts["english"]),
-        _normalize(cleaned_texts["modern_standard_arabic"]),
-    )
+        for raw in output[col].fillna("").astype(str):
+            normalized = normalize_whitespace(raw)
+            normalized, removed_placeholders = remove_placeholder_terms(normalized, placeholders)
+            normalized, removed_duplicates = collapse_adjacent_duplicate_tokens(normalized)
+            fixed_values.append(normalized)
+            placeholder_removals += removed_placeholders
+            duplicate_token_removals += removed_duplicates
 
+        output[col] = fixed_values
 
-def global_clean_text(value: object) -> str:
-    """
-    Global cleaning applied to every text field.
+    english_word_count_changed_rows = 0
+    if "english_word_count" in output.columns:
+        recalculated = output["english"].fillna("").astype(str).str.split().apply(len).astype(int)
+        previous = pd.to_numeric(output["english_word_count"], errors="coerce").fillna(-1).astype(int)
+        english_word_count_changed_rows = int((previous != recalculated).sum())
+        output["english_word_count"] = recalculated
 
-    Includes:
-    - HTML/XML stripping
-    - escaped/newline/tab cleanup
-    - artifact removal
-    - quote normalization
-    - spacing normalization
-    """
-    text = safe_text(value)
-    text = maybe_fix_mojibake(text)
-    text = html.unescape(text)
-    text = remove_encoding_noise(text)
-    text = text.replace("\\n", " ").replace("\\t", " ").replace("\\r", " ")
-    text = text.replace("\n", " ").replace("\t", " ").replace("\r", " ")
-    text = HTML_TAG_PATTERN.sub(" ", text)
-    text = remove_web_noise(text)
-    text = ARTIFACT_PATTERN.sub(" ", text)
-    text = normalize_quotes_and_apostrophes(text)
-    return normalize_whitespace(text)
-
-
-def fix_common_english_contractions(text: str) -> str:
-    """Repair frequent missing-apostrophe contractions."""
-    fixed = text
-    for pattern, replacement in ENGLISH_CONTRACTION_FIXES.items():
-        fixed = re.sub(pattern, replacement, fixed)
-    return fixed
+    stats = {
+        "placeholder_removals": placeholder_removals,
+        "duplicate_token_removals": duplicate_token_removals,
+        "english_word_count_recomputed_rows": english_word_count_changed_rows,
+    }
+    return output, stats
 
 
 def clean_english(
-    value: object,
+    text: object,
     english_stopwords: Set[str],
-    remove_sw: bool,
-    advanced_config: AdvancedNormalizationConfig,
+    options: CleaningOptions,
+    stemmer: PorterStemmer,
+    lemmatizer: WordNetLemmatizer | None,
 ) -> str:
-    """Language-specific English cleaning rules."""
-    text = global_clean_text(value).lower()
-    text = enforce_latin_punctuation(text)
-    text = normalize_english_abbreviations(text)
-    text = fix_common_english_contractions(text)
-    if advanced_config.expand_english_contractions:
-        text = expand_english_contractions(text)
-    if advanced_config.apply_basic_english_spell_fixes:
-        text = apply_basic_english_spelling_fixes(text)
-    text = normalize_laughter(
-        text,
-        is_arabic_script=False,
-        mode=advanced_config.laugh_mode,
-        laugh_token=advanced_config.laugh_token,
-    )
-    text = ENGLISH_REPEAT_PATTERN.sub(r"\1", text)
-    text = normalize_whitespace(text)
-    if remove_sw:
-        text = remove_stopwords(text, english_stopwords)
-    return normalize_whitespace(text)
+    cleaned = as_text(text).lower()
+    if options.expand_english_contractions:
+        cleaned = expand_english_contractions(cleaned)
+    cleaned = strip_unicode_punctuation(cleaned)
+    cleaned = strip_non_latin_alnum(cleaned)
+    tokens = [tok for tok in normalize_whitespace(cleaned).split() if tok not in english_stopwords]
+
+    if options.english_normalization == "stem":
+        tokens = [stemmer.stem(tok) for tok in tokens]
+    elif options.english_normalization == "lemma" and lemmatizer is not None:
+        tokens = [lemmatizer.lemmatize(tok) for tok in tokens]
+
+    return " ".join(tokens)
 
 
-def normalize_arabizi_variants(text: str, advanced_config: AdvancedNormalizationConfig) -> str:
-    """Apply conservative Arabizi canonicalization for common noisy variants."""
-    normalized = strip_latin_accents(text)
-    normalized = normalized.replace("_", " ")
-    normalized = re.sub(r"\s*-\s*", "-", normalized)
-    for pattern, replacement in ARABIZI_VARIANT_PATTERNS:
-        normalized = pattern.sub(replacement, normalized)
-    if advanced_config.normalize_arabizi_prefixes:
-        normalized = normalize_arabizi_prefix_spacing(normalized)
-    normalized = normalize_arabizi_kh_standard(normalized, advanced_config.arabizi_kh_standard)
-    return normalized
-
-
-def clean_darija_arabizi(
-    value: object,
-    arabizi_stopwords: Set[str],
-    remove_sw: bool,
-    advanced_config: AdvancedNormalizationConfig,
+def clean_modern_standard_arabic(
+    text: object,
+    msa_stopwords: Set[str],
+    options: CleaningOptions,
 ) -> str:
-    """Language-specific Darija Arabizi cleaning rules."""
-    text = global_clean_text(value).lower()
-    text = enforce_latin_punctuation(text)
-    text = normalize_arabizi_variants(text, advanced_config=advanced_config)
-    text = normalize_laughter(
+    cleaned = normalize_arabic_text(
         text,
-        is_arabic_script=False,
-        mode=advanced_config.laugh_mode,
-        laugh_token=advanced_config.laugh_token,
+        fold_ta_marbuta=False,
+        fold_yeh=False,
     )
-    text = ARABIZI_REPEAT_PATTERN.sub(r"\1", text)
-    text = normalize_whitespace(text)
-    if remove_sw:
-        text = remove_stopwords(text, arabizi_stopwords)
-    return normalize_whitespace(text)
 
+    if options.split_arabic_clitics:
+        cleaned = split_arabic_clitics(cleaned, split_negation=False)
 
-def enforce_arabic_punctuation(text: str) -> str:
-    """Convert ASCII punctuation to Arabic punctuation for Arabic-script fields."""
-    text = text.replace(",", "،")
-    text = text.replace(";", "؛")
-    text = text.replace("?", "؟")
-    return text
+    tokens = [tok for tok in cleaned.split() if tok not in msa_stopwords]
 
+    if options.use_light_arabic_stemming:
+        tokens = light_arabic_stem_tokens(tokens)
 
-def normalize_arabic_script(
-    text: str,
-    advanced_config: AdvancedNormalizationConfig,
-    is_darija: bool,
-) -> str:
-    """
-    Arabic normalization shared by Darija Arabic and MSA.
-
-    Rules:
-    - Alef variants -> bare Alef
-    - remove diacritics
-    - remove tatweel
-    - unify terminal Taa Marbouta/Haa (here: ة -> ه)
-    - unify terminal Yaa/Alif Maqsoura (here: ى -> ي)
-    """
-    text = normalize_arabic_letter_variants(text)
-    if is_darija:
-        text = normalize_darija_specific_letters(
-            text,
-            g_standard=advanced_config.darija_g_standard,
-            v_standard=advanced_config.darija_v_standard,
-        )
-
-    text = ARABIC_ALEF_VARIANTS_PATTERN.sub("ا", text)
-    text = ARABIC_DIACRITICS_PATTERN.sub("", text)
-    text = ARABIC_TATWEEL_PATTERN.sub("", text)
-    if advanced_config.normalize_hamza:
-        text = normalize_hamza_forms(text)
-
-    if advanced_config.arabic_final_taa_mode == "haa":
-        text = ARABIC_END_TA_MARBUTA_PATTERN.sub("ه", text)
-    elif advanced_config.arabic_final_taa_mode == "taa":
-        # Keep taa marbouta as-is and only convert likely keyboard-final haa to taa.
-        text = re.sub(r"\b([\u0621-\u064A]{3,})ه\b", r"\1ة", text)
-
-    text = ARABIC_END_ALIF_MAKSURA_PATTERN.sub("ي", text)
-    if is_darija:
-        text = reduce_arabic_letter_repeats(text)
-        if advanced_config.normalize_darija_prefixes:
-            text = normalize_darija_prefix_attachment_arabic(text)
-    text = normalize_laughter(
-        text,
-        is_arabic_script=True,
-        mode=advanced_config.laugh_mode,
-        laugh_token=advanced_config.laugh_token,
-    )
-    text = enforce_arabic_punctuation(text)
-    return normalize_whitespace(text)
+    return " ".join(tokens)
 
 
 def clean_darija_arabic(
-    value: object,
-    arabic_stopwords: Set[str],
-    remove_sw: bool,
-    advanced_config: AdvancedNormalizationConfig,
+    text: object,
+    darija_stopwords: Set[str],
+    options: CleaningOptions,
 ) -> str:
-    """Language-specific Darija Arabic cleaning rules."""
-    text = global_clean_text(value)
-    text = normalize_arabic_script(text, advanced_config=advanced_config, is_darija=True)
-    if remove_sw:
-        text = remove_stopwords(text, arabic_stopwords)
-    return normalize_whitespace(text)
+    """Darija Arabic cleaning with caller-provided custom stopwords."""
+    cleaned = normalize_arabic_text(
+        text,
+        fold_ta_marbuta=True,
+        fold_yeh=True,
+    )
+    cleaned = normalize_darija_variants(cleaned)
+
+    if options.split_arabic_clitics:
+        cleaned = split_arabic_clitics(cleaned, split_negation=options.split_darija_negation)
+
+    tokens = [tok for tok in cleaned.split() if tok not in darija_stopwords]
+
+    if options.use_light_arabic_stemming:
+        tokens = light_arabic_stem_tokens(tokens)
+
+    return " ".join(tokens)
 
 
-def clean_msa(
-    value: object,
-    arabic_stopwords: Set[str],
-    remove_sw: bool,
-    advanced_config: AdvancedNormalizationConfig,
+def clean_darija_arabizi(
+    text: object,
+    arabizi_stopwords: Set[str],
+    darija_stopwords_arabic: Set[str],
+    options: CleaningOptions,
 ) -> str:
-    """Language-specific MSA cleaning rules."""
-    text = global_clean_text(value)
-    text = normalize_arabic_script(text, advanced_config=advanced_config, is_darija=False)
-    if remove_sw:
-        text = remove_stopwords(text, arabic_stopwords)
-    return normalize_whitespace(text)
-
-
-def detect_missing_values(raw_row: Dict[str, object], cleaned_texts: Dict[str, str]) -> Tuple[List[str], List[str]]:
-    """Return columns with NaN values and columns empty after cleaning."""
-    nan_columns: List[str] = []
-    empty_columns: List[str] = []
-
-    for col in TEXT_COLUMNS:
-        if pd.isna(raw_row.get(col)):
-            nan_columns.append(col)
-        if cleaned_texts.get(col, "") == "":
-            empty_columns.append(col)
-
-    return nan_columns, empty_columns
-
-
-def detect_extreme_length_discrepancy(
-    cleaned_texts: Dict[str, str],
-    config: LengthCheckConfig,
-) -> Tuple[bool, str]:
     """
-    Flag rows where multilingual lengths are suspiciously imbalanced.
-
-    Uses both character-length ratio and token-length ratio.
+    Arabizi cleaning that preserves digits attached to letters.
+    Isolated digits are removed via regex lookarounds.
     """
-    char_lengths = {col: len(txt) for col, txt in cleaned_texts.items() if txt}
-    word_lengths = {col: len(txt.split()) for col, txt in cleaned_texts.items() if txt}
+    cleaned = as_text(text).lower()
+    cleaned = reduce_repeated_characters(cleaned, max_repeats=options.arabizi_max_char_repeat)
 
-    if len(char_lengths) < 2 or len(word_lengths) < 2:
-        return False, ""
+    if options.arabizi_drop_vowels:
+        cleaned = drop_arabizi_vowels(cleaned)
 
-    char_candidates = {
-        col: length
-        for col, length in char_lengths.items()
-        if length >= config.min_chars_for_ratio
-    }
-    if len(char_candidates) >= 2:
-        min_char_col = min(char_candidates, key=char_candidates.get)
-        max_char_col = max(char_candidates, key=char_candidates.get)
-        min_char = char_candidates[min_char_col]
-        max_char = char_candidates[max_char_col]
-        char_ratio = max_char / max(1, min_char)
-    else:
-        min_char_col = max_char_col = ""
-        min_char = max_char = 0
-        char_ratio = 1.0
+    if options.transliterate_arabizi_to_arabic:
+        cleaned = transliterate_arabizi_to_arabic(cleaned)
+        cleaned = normalize_arabic_text(cleaned, fold_ta_marbuta=True, fold_yeh=True)
+        tokens = [tok for tok in cleaned.split() if tok not in darija_stopwords_arabic]
+        if options.use_light_arabic_stemming:
+            tokens = light_arabic_stem_tokens(tokens)
+        return " ".join(tokens)
 
-    min_word_col = min(word_lengths, key=word_lengths.get)
-    max_word_col = max(word_lengths, key=word_lengths.get)
-    min_word = word_lengths[min_word_col]
-    max_word = word_lengths[max_word_col]
-    word_ratio = max_word / max(1, min_word)
-
-    reasons: List[str] = []
-    if char_ratio >= config.char_ratio_threshold:
-        reasons.append(
-            f"char_ratio={char_ratio:.2f} ({min_char_col}:{min_char} vs {max_char_col}:{max_char})"
-        )
-    if word_ratio >= config.word_ratio_threshold:
-        reasons.append(
-            f"word_ratio={word_ratio:.2f} ({min_word_col}:{min_word} vs {max_word_col}:{max_word})"
-        )
-
-    if reasons:
-        return True, " ; ".join(reasons)
-    return False, ""
+    cleaned = strip_unicode_punctuation(cleaned)
+    cleaned = ISOLATED_DIGITS_PATTERN.sub(" ", cleaned)
+    cleaned = strip_non_latin_alnum(cleaned)
+    tokens = [tok for tok in normalize_whitespace(cleaned).split() if tok not in arabizi_stopwords]
+    return " ".join(tokens)
 
 
-def build_qc_note(
-    status: str,
-    modified_fields: Sequence[str],
-    nan_columns: Sequence[str],
-    empty_columns: Sequence[str],
-    issues: Sequence[str],
-    discrepancy_detail: str,
-) -> str:
-    """Create compact human-readable QC notes in English."""
-    notes: List[str] = []
-    issue_set = set(issues)
+def discover_top_darija_words(
+    darija_series: pd.Series,
+    excluded_stopwords: Iterable[str],
+    top_n: int = 100,
+) -> List[Tuple[str, int]]:
+    """Find top frequent Darija Arabic words after excluding custom stopwords."""
+    excluded = set(excluded_stopwords)
+    counter: Counter[str] = Counter()
 
-    if modified_fields:
-        notes.append("Normalized fields: " + ", ".join(modified_fields) + ".")
+    for text in darija_series.fillna("").astype(str):
+        tokens = [tok for tok in text.split() if tok and tok not in excluded]
+        counter.update(tokens)
 
-    if "removed_empty_row" in issue_set:
-        notes.append("Row removed: all four text fields are empty after cleaning.")
-
-    if "removed_duplicate_data_id" in issue_set:
-        notes.append("Row removed: duplicate data_id detected.")
-
-    if "removed_duplicate_multilingual_text" in issue_set:
-        notes.append("Row removed: exact duplicate multilingual text detected.")
-
-    if "removed_duplicate_partial_text" in issue_set:
-        notes.append("Row removed: near-duplicate multilingual text detected (partial duplicate).")
-
-    if "removed_nan_values" in issue_set:
-        notes.append("Row removed because missing values were detected.")
-
-    if "removed_word_count_out_of_bounds" in issue_set:
-        notes.append("Row removed due to very short/very long sentence length.")
-
-    if nan_columns:
-        notes.append("NaN detected in: " + ", ".join(nan_columns) + ".")
-
-    if empty_columns and "removed_empty_row" not in issue_set:
-        notes.append("Empty after cleaning in: " + ", ".join(empty_columns) + ".")
-
-    if "flagged_empty_after_cleaning" in issue_set:
-        notes.append("One or more target fields became empty after cleaning.")
-
-    if "flagged_length_discrepancy" in issue_set:
-        note = "Extreme length discrepancy across languages"
-        if discrepancy_detail:
-            note += f" ({discrepancy_detail})"
-        notes.append(note + ".")
-
-    langid_issue_notes = {
-        "flagged_langid_english_contains_arabic": "Language mismatch: English field contains Arabic script.",
-        "flagged_langid_arabizi_contains_arabic": "Language mismatch: Arabizi field contains Arabic script.",
-        "flagged_langid_darija_arabic_contains_latin": "Language mismatch: Darija Arabic field contains Latin script.",
-        "flagged_langid_msa_contains_latin": "Language mismatch: MSA field contains Latin script.",
-    }
-    for issue_key, message in langid_issue_notes.items():
-        if issue_key in issue_set:
-            notes.append(message)
-
-    if "flagged_cross_darija_arabizi_incoherence" in issue_set:
-        notes.append("Cross-lingual mismatch suspected between Darija Arabic and Arabizi columns.")
-
-    if status == STATUS_CLEAN and not notes:
-        return ""
-
-    return " ".join(notes)
+    return counter.most_common(top_n)
 
 
-def validate_columns(df: pd.DataFrame) -> None:
-    """Ensure the input file contains the required dataset schema."""
-    missing = [col for col in EXPECTED_COLUMNS if col not in df.columns]
+def validate_required_columns(df: pd.DataFrame, columns: Sequence[str]) -> None:
+    missing = [col for col in columns if col not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
 
-def process_dataframe(
+def apply_global_preprocessing(
     df: pd.DataFrame,
-    length_config: LengthCheckConfig,
-    english_stopwords: Set[str],
-    arabic_stopwords: Set[str],
-    arabizi_stopwords: Set[str],
-    stopword_config: StopwordConfig,
-    advanced_config: AdvancedNormalizationConfig,
-) -> Tuple[pd.DataFrame, Dict[str, object]]:
-    """Clean, flag, and mark rows with robust per-row exception handling."""
-    issue_counter: Counter[str] = Counter()
-    modified_field_counter: Counter[str] = Counter()
+    columns: Sequence[str],
+    options: CleaningOptions,
+) -> pd.DataFrame:
+    """Apply global artifact cleanup to all target columns using Series.apply."""
+    output = df.copy()
+    for col in columns:
+        output[col] = output[col].apply(
+            lambda value: apply_universal_text_cleanup(value, emoji_replacement=options.emoji_replacement)
+        )
+    return output
 
-    data_id_series = df["data_id"].fillna("").astype(str).str.strip()
-    duplicate_data_id_indices = set(df.index[data_id_series.ne("") & data_id_series.duplicated(keep="first")])
 
-    seen_multilingual_signatures: set[Tuple[str, str, str, str]] = set()
-    seen_multilingual_loose_signatures: set[Tuple[str, str, str, str]] = set()
-    cleaned_rows: List[Dict[str, object]] = []
+def drop_rows_with_empty_targets(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+) -> Tuple[pd.DataFrame, int]:
+    """Drop rows where any target column is empty/whitespace after cleaning."""
+    normalized = df.copy()
+    for col in columns:
+        normalized[col] = normalized[col].fillna("").astype(str)
 
-    clean_count = 0
-    removed_count = 0
-    flagged_count = 0
-    modified_row_count = 0
+    keep_mask = normalized[list(columns)].apply(
+        lambda series: series.str.strip().ne("")
+    ).all(axis=1)
 
-    iterator = tqdm(df.iterrows(), total=len(df), desc="Cleaning rows", unit="row")
+    dropped_count = int((~keep_mask).sum())
+    return normalized.loc[keep_mask].copy(), dropped_count
 
-    for row_index, row in iterator:
-        try:
-            row_dict = row.to_dict()
 
-            original_texts = {col: safe_text(row_dict.get(col)) for col in TEXT_COLUMNS}
-            normalized_original_for_diff = {
-                col: normalize_whitespace(original_texts[col]) for col in TEXT_COLUMNS
-            }
+def drop_rows_with_metadata_contamination(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+) -> Tuple[pd.DataFrame, int]:
+    contamination_mask = df[list(columns)].apply(
+        lambda series: series.apply(looks_like_metadata_value)
+    ).any(axis=1)
+    dropped_count = int(contamination_mask.sum())
+    return df.loc[~contamination_mask].copy(), dropped_count
 
-            cleaned_texts = {
-                "darija_arabic": clean_darija_arabic(
-                    row_dict.get("darija_arabic"),
-                    arabic_stopwords=arabic_stopwords,
-                    remove_sw=stopword_config.remove_arabic,
-                    advanced_config=advanced_config,
-                ),
-                "darija_arabizi": clean_darija_arabizi(
-                    row_dict.get("darija_arabizi"),
-                    arabizi_stopwords=arabizi_stopwords,
-                    remove_sw=stopword_config.remove_arabizi,
-                    advanced_config=advanced_config,
-                ),
-                "english": clean_english(
-                    row_dict.get("english"),
-                    english_stopwords=english_stopwords,
-                    remove_sw=stopword_config.remove_english,
-                    advanced_config=advanced_config,
-                ),
-                "modern_standard_arabic": clean_msa(
-                    row_dict.get("modern_standard_arabic"),
-                    arabic_stopwords=arabic_stopwords,
-                    remove_sw=stopword_config.remove_arabic,
-                    advanced_config=advanced_config,
-                ),
-            }
 
-            modified_fields = [
-                col
-                for col in TEXT_COLUMNS
-                if cleaned_texts[col] != normalized_original_for_diff[col]
-            ]
-            if modified_fields:
-                modified_row_count += 1
-                for field_name in modified_fields:
-                    modified_field_counter[field_name] += 1
+def drop_rows_with_msa_darija_leakage(
+    df: pd.DataFrame,
+    msa_column: str = "modern_standard_arabic",
+) -> Tuple[pd.DataFrame, int]:
+    leakage_mask = df[msa_column].apply(contains_darija_marker)
+    dropped_count = int(leakage_mask.sum())
+    return df.loc[~leakage_mask].copy(), dropped_count
 
-            nan_columns, empty_columns = detect_missing_values(row_dict, cleaned_texts)
-            row_issues: List[str] = []
-            discrepancy_detail = ""
 
-            all_empty = all(cleaned_texts[col] == "" for col in TEXT_COLUMNS)
+def drop_qc_columns(df: pd.DataFrame) -> pd.DataFrame:
+    columns_to_drop = [col for col in QC_COLUMNS if col in df.columns]
+    if not columns_to_drop:
+        return df
+    return df.drop(columns=columns_to_drop)
 
-            if all_empty:
-                status = STATUS_REMOVED
-                row_issues.append("removed_empty_row")
-                issue_counter["removed_empty_row"] += 1
-            elif row_index in duplicate_data_id_indices:
-                status = STATUS_REMOVED
-                row_issues.append("removed_duplicate_data_id")
-                issue_counter["removed_duplicate_data_id"] += 1
-            else:
-                signature = (
-                    cleaned_texts["darija_arabic"],
-                    cleaned_texts["darija_arabizi"],
-                    cleaned_texts["english"],
-                    cleaned_texts["modern_standard_arabic"],
-                )
-                if signature in seen_multilingual_signatures:
-                    status = STATUS_REMOVED
-                    row_issues.append("removed_duplicate_multilingual_text")
-                    issue_counter["removed_duplicate_multilingual_text"] += 1
-                else:
-                    seen_multilingual_signatures.add(signature)
-                    loose_signature = make_loose_signature(cleaned_texts)
-                    if loose_signature in seen_multilingual_loose_signatures:
-                        status = STATUS_REMOVED
-                        row_issues.append("removed_duplicate_partial_text")
-                        issue_counter["removed_duplicate_partial_text"] += 1
-                    else:
-                        seen_multilingual_loose_signatures.add(loose_signature)
-                        status = STATUS_CLEAN
 
-            if status != STATUS_REMOVED:
-                if nan_columns:
-                    if advanced_config.missing_value_policy == "remove":
-                        status = STATUS_REMOVED
-                        row_issues.append("removed_nan_values")
-                        issue_counter["removed_nan_values"] += 1
-                    else:
-                        status = STATUS_FLAGGED
-                        row_issues.append("flagged_nan_values")
-                        issue_counter["flagged_nan_values"] += 1
+def drop_rows_by_status(
+    df: pd.DataFrame,
+    statuses_to_drop: Set[str],
+    status_column: str = "status",
+) -> Tuple[pd.DataFrame, int]:
+    if status_column not in df.columns:
+        return df.copy(), 0
 
-                partially_empty = [col for col in empty_columns if col not in nan_columns]
-                if partially_empty:
-                    status = STATUS_FLAGGED
-                    row_issues.append("flagged_empty_after_cleaning")
-                    issue_counter["flagged_empty_after_cleaning"] += 1
+    normalized_statuses = {status.upper() for status in statuses_to_drop}
+    drop_mask = df[status_column].fillna("").astype(str).str.upper().isin(normalized_statuses)
+    dropped_count = int(drop_mask.sum())
+    return df.loc[~drop_mask].copy(), dropped_count
 
-                lang_issues = detect_script_mismatch_issues(cleaned_texts)
 
-                # Balanced profile: keep only hard language mismatches.
-                if (
-                    not advanced_config.normalize_hamza
-                    and not advanced_config.normalize_arabizi_prefixes
-                    and not advanced_config.normalize_darija_prefixes
-                ):
-                    allowed_lang_issues = {
-                        "flagged_langid_english_contains_arabic",
-                        "flagged_langid_arabizi_contains_arabic",
-                    }
-                    lang_issues = [issue for issue in lang_issues if issue in allowed_lang_issues]
+def clean_parallel_corpus(
+    df: pd.DataFrame,
+    darija_stopwords: Iterable[str],
+    arabizi_stopwords: Iterable[str],
+    options: CleaningOptions,
+    keep_qc_columns: bool = False,
+    drop_msa_darija_leakage: bool = True,
+    drop_error_status_rows: bool = True,
+) -> Tuple[pd.DataFrame, List[Tuple[str, int]], Dict[str, int]]:
+    """Run the full cleaning pipeline over the four MT columns."""
+    validate_required_columns(df, TARGET_COLUMNS)
 
-                for issue in lang_issues:
-                    status = STATUS_FLAGGED
-                    row_issues.append(issue)
-                    issue_counter[issue] += 1
+    english_sw = load_stopwords_or_fallback("english", FALLBACK_ENGLISH_STOPWORDS)
+    arabic_sw = load_stopwords_or_fallback("arabic", FALLBACK_ARABIC_STOPWORDS)
+    msa_sw = normalize_arabic_stopwords(
+        arabic_sw,
+        fold_ta_marbuta=False,
+        fold_yeh=False,
+    )
+    darija_sw = normalize_arabic_stopwords(
+        darija_stopwords,
+        fold_ta_marbuta=True,
+        fold_yeh=True,
+    )
+    arabizi_sw = set(arabizi_stopwords)
+    stemmer = PorterStemmer()
+    lemmatizer = load_wordnet_lemmatizer_if_available() if options.english_normalization == "lemma" else None
 
-                if (
-                    advanced_config.normalize_arabizi_prefixes
-                    and advanced_config.normalize_darija_prefixes
-                    and detect_cross_darija_arabizi_incoherence(cleaned_texts)
-                ):
-                    status = STATUS_FLAGGED
-                    row_issues.append("flagged_cross_darija_arabizi_incoherence")
-                    issue_counter["flagged_cross_darija_arabizi_incoherence"] += 1
+    output = apply_global_preprocessing(df, TARGET_COLUMNS, options)
 
-                in_bounds, bounds_detail = within_word_bounds(
-                    cleaned_texts,
-                    min_words=advanced_config.min_words_per_field,
-                    max_words=advanced_config.max_words_per_field,
-                )
-                if not in_bounds:
-                    status = STATUS_REMOVED
-                    row_issues.append("removed_word_count_out_of_bounds")
-                    issue_counter["removed_word_count_out_of_bounds"] += 1
-                    if bounds_detail:
-                        discrepancy_detail = (discrepancy_detail + " ; " + bounds_detail).strip(" ;")
+    output["english"] = output["english"].apply(
+        lambda val: clean_english(
+            val,
+            english_sw,
+            options,
+            stemmer,
+            lemmatizer,
+        )
+    )
+    output["modern_standard_arabic"] = output["modern_standard_arabic"].apply(
+        lambda val: clean_modern_standard_arabic(val, msa_sw, options)
+    )
+    output["darija_arabic"] = output["darija_arabic"].apply(
+        lambda val: clean_darija_arabic(val, darija_sw, options)
+    )
+    output["darija_arabizi"] = output["darija_arabizi"].apply(
+        lambda val: clean_darija_arabizi(
+            val,
+            arabizi_sw,
+            darija_sw,
+            options,
+        )
+    )
 
-                has_discrepancy, discrepancy_detail = detect_extreme_length_discrepancy(
-                    cleaned_texts,
-                    config=length_config,
-                )
-                if has_discrepancy and status != STATUS_REMOVED:
-                    status = STATUS_FLAGGED
-                    row_issues.append("flagged_length_discrepancy")
-                    issue_counter["flagged_length_discrepancy"] += 1
+    output, dropped_metadata_rows = drop_rows_with_metadata_contamination(output, TARGET_COLUMNS)
+    dropped_msa_darija_rows = 0
+    if drop_msa_darija_leakage:
+        output, dropped_msa_darija_rows = drop_rows_with_msa_darija_leakage(output)
 
-            output_row = dict(row_dict)
-            output_row.update(cleaned_texts)
-            output_row["english_word_count"] = int(len(cleaned_texts["english"].split()))
-            output_row["status"] = status
+    dropped_error_status_rows = 0
+    if drop_error_status_rows:
+        output, dropped_error_status_rows = drop_rows_by_status(output, {"ERROR"})
 
-            changed_fields = set(modified_fields)
-            if status in {STATUS_FLAGGED, STATUS_REMOVED}:
-                changed_fields.add("status")
-                changed_fields.update(nan_columns)
-                changed_fields.update(empty_columns)
+    top_words = discover_top_darija_words(output["darija_arabic"], darija_sw, top_n=100)
+    cleaned, dropped_empty_rows = drop_rows_with_empty_targets(output, TARGET_COLUMNS)
+    cleaned, post_clean_stats = apply_post_clean_quality_fixes(cleaned, TARGET_COLUMNS)
+    if not keep_qc_columns:
+        cleaned = drop_qc_columns(cleaned)
 
-            output_row["qc_changed_fields"] = ";".join(sorted(changed_fields))
-            output_row["qc_notes"] = build_qc_note(
-                status=status,
-                modified_fields=modified_fields,
-                nan_columns=nan_columns,
-                empty_columns=empty_columns,
-                issues=row_issues,
-                discrepancy_detail=discrepancy_detail,
-            )
-
-            if status == STATUS_CLEAN:
-                clean_count += 1
-            elif status == STATUS_FLAGGED:
-                flagged_count += 1
-            else:
-                removed_count += 1
-
-            cleaned_rows.append(output_row)
-
-        except Exception as exc:  # pylint: disable=broad-except
-            logging.exception("Row %s failed during processing: %s", row_index, exc)
-            issue_counter["row_processing_exception"] += 1
-
-            fallback_row = row.to_dict()
-            for col in TEXT_COLUMNS:
-                fallback_row[col] = global_clean_text(fallback_row.get(col))
-            fallback_row["english_word_count"] = int(len(safe_text(fallback_row.get("english")).split()))
-            fallback_row["status"] = STATUS_FLAGGED
-            fallback_row["qc_changed_fields"] = "status"
-            fallback_row["qc_notes"] = f"Row processing exception: {exc.__class__.__name__}."
-            cleaned_rows.append(fallback_row)
-            flagged_count += 1
-
-    output_df = pd.DataFrame(cleaned_rows)
-
-    report = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "total_rows_processed": int(len(df)),
-        "removed_rows": int(removed_count),
-        "cleaned_rows": int(clean_count),
-        "flagged_rows": int(flagged_count),
-        "modified_rows": int(modified_row_count),
-        "issue_summary": dict(issue_counter),
-        "column_modification_summary": dict(modified_field_counter),
-        "length_discrepancy_thresholds": {
-            "char_ratio_threshold": length_config.char_ratio_threshold,
-            "word_ratio_threshold": length_config.word_ratio_threshold,
-            "min_chars_for_ratio": length_config.min_chars_for_ratio,
-        },
+    stats = {
+        "input_rows": int(len(df)),
+        "dropped_rows": dropped_metadata_rows + dropped_msa_darija_rows + dropped_error_status_rows + dropped_empty_rows,
+        "dropped_metadata_rows": dropped_metadata_rows,
+        "dropped_msa_darija_rows": dropped_msa_darija_rows,
+        "dropped_error_status_rows": dropped_error_status_rows,
+        "dropped_empty_rows": dropped_empty_rows,
+        "output_rows": int(len(cleaned)),
+        **post_clean_stats,
     }
+    return cleaned, top_words, stats
 
-    return output_df, report
+
+def parse_stopword_argument(raw_value: str | None, default_values: Iterable[str]) -> Set[str]:
+    if not raw_value:
+        return set(default_values)
+    parsed = {tok.strip().lower() for tok in raw_value.split(",") if tok.strip()}
+    return parsed
+
+
+def create_dummy_dataset() -> pd.DataFrame:
+    """Small in-script dataset to demonstrate pipeline execution."""
+    return pd.DataFrame(
+        {
+            "darija_arabic": [
+                "هدا @-@ مثال <unk> بسيط",
+                "الْجُملَةُ الثّانِيَةُ فيها تَشْكِيلٌ",
+                "<unk>",
+            ],
+            "darija_arabizi": [
+                "hada @-@ mital 3la 2025 https://x.com",
+                "kanmchi lmadrasa b7al 3ada!",
+                "@-@",
+            ],
+            "english": [
+                "This is @-@ a test <unk> row. Visit https://example.com",
+                "Another SAMPLE, with punctuation!",
+                "<unk>",
+            ],
+            "modern_standard_arabic": [
+                "هٰذا @-@ نَصٌّ <unk> تَجْرِيبِيٌّ",
+                "إِنَّ هٰذِهِ جُمْلَةٌ طَوِيلَةٌ",
+                "@-@",
+            ],
+        }
+    )
+
+
+def print_dataframe_preview(title: str, df: pd.DataFrame, rows: int = 5) -> None:
+    print(f"\n{title}")
+    if df.empty:
+        print("<empty dataframe>")
+        return
+    print(df.head(rows).to_string(index=False))
+
+
+def run_dummy_demo(
+    darija_stopwords: Iterable[str],
+    arabizi_stopwords: Iterable[str],
+    options: CleaningOptions,
+) -> None:
+    dummy_df = create_dummy_dataset()
+    print_dataframe_preview("Dummy input DataFrame:", dummy_df, rows=10)
+
+    cleaned_dummy, dummy_top_words, dummy_stats = clean_parallel_corpus(
+        dummy_df,
+        darija_stopwords=darija_stopwords,
+        arabizi_stopwords=arabizi_stopwords,
+        options=options,
+    )
+
+    print_dataframe_preview("Dummy cleaned DataFrame:", cleaned_dummy, rows=10)
+    print(f"\nDummy stats: {json.dumps(dummy_stats, ensure_ascii=False)}")
+    print("Top Darija words from dummy sample:")
+    print(pd.DataFrame(dummy_top_words, columns=["word", "count"]).head(10).to_string(index=False))
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse script arguments."""
     parser = argparse.ArgumentParser(
-        description="Advanced modular multilingual text cleaner for MariNova corpus.",
+        description="Clean corrected silver_shard_3 with modular NLP rules."
     )
     parser.add_argument(
         "--input",
-        default="artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.final.csv",
-        help="Input CSV path.",
+        default="artifacts/silver_shard_3_qc/silver_shard_3.corrected.auto.csv",
+        help="Path to corrected silver shard CSV.",
     )
     parser.add_argument(
         "--output-dir",
         default="artifacts/silver_shard_3_cleaned",
-        help="Output directory for cleaned CSV and JSON report.",
+        help="Isolated output folder for cleaned data and reports.",
     )
     parser.add_argument(
         "--output-name",
         default="silver_shard_3.corrected.cleaned.csv",
-        help="Output cleaned CSV filename.",
+        help="Cleaned CSV file name.",
     )
     parser.add_argument(
-        "--report-name",
-        default="cleaning_report.json",
-        help="Output JSON report filename.",
-    )
-    parser.add_argument(
-        "--drop-removed-rows",
-        action="store_true",
-        help="If set, rows marked REMOVED are excluded from the written CSV.",
-    )
-    parser.add_argument(
-        "--char-ratio-threshold",
-        type=float,
-        default=8.0,
-        help="Extreme char-length ratio threshold used for FLAGGED rows.",
-    )
-    parser.add_argument(
-        "--word-ratio-threshold",
-        type=float,
-        default=6.0,
-        help="Extreme word-length ratio threshold used for FLAGGED rows.",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging verbosity.",
-    )
-    parser.add_argument(
-        "--disable-english-stopwords",
-        action="store_true",
-        help="Disable English stopword removal.",
-    )
-    parser.add_argument(
-        "--disable-arabic-stopwords",
-        action="store_true",
-        help="Disable Arabic-script stopword removal for Darija Arabic and MSA.",
-    )
-    parser.add_argument(
-        "--disable-arabizi-stopwords",
-        action="store_true",
-        help="Disable Darija Arabizi stopword removal.",
-    )
-    parser.add_argument(
-        "--english-stopwords-add",
+        "--darija-stopwords",
         default=None,
-        help="Comma-separated extra English stopwords.",
+        help="Comma-separated custom Darija Arabic stopwords.",
     )
     parser.add_argument(
-        "--arabic-stopwords-add",
+        "--arabizi-stopwords",
         default=None,
-        help="Comma-separated extra Arabic-script stopwords.",
+        help="Comma-separated custom Darija Arabizi stopwords.",
     )
     parser.add_argument(
-        "--arabizi-stopwords-add",
-        default=None,
-        help="Comma-separated extra Darija Arabizi stopwords.",
-    )
-    parser.add_argument(
-        "--english-stopwords-file",
-        default=None,
-        help="Optional file with one English stopword per line.",
-    )
-    parser.add_argument(
-        "--arabic-stopwords-file",
-        default=None,
-        help="Optional file with one Arabic-script stopword per line.",
-    )
-    parser.add_argument(
-        "--arabizi-stopwords-file",
-        default=None,
-        help="Optional file with one Darija Arabizi stopword per line.",
-    )
-    parser.add_argument(
-        "--arabic-final-taa-mode",
-        default="haa",
-        choices=["haa", "taa", "keep"],
-        help="Arabic final-letter policy for ة/ه normalization.",
-    )
-    parser.add_argument(
-        "--darija-g-standard",
-        default="ڭ",
-        choices=["ڭ", "گ", "غ"],
-        help="Target standard for Darija G-family letters.",
-    )
-    parser.add_argument(
-        "--darija-v-standard",
-        default="ف",
-        choices=["ف", "ڤ"],
-        help="Target standard for Darija V-family letters.",
-    )
-    parser.add_argument(
-        "--arabizi-kh-standard",
-        default="kh",
-        choices=["kh", "5", "keep"],
-        help="Target standard for Arabizi kh sound.",
-    )
-    parser.add_argument(
-        "--laugh-mode",
-        default="token",
-        choices=["token", "reduce", "keep"],
-        help="How to normalize laugh patterns.",
-    )
-    parser.add_argument(
-        "--laugh-token",
-        default="<LAUGH>",
-        help="Token used when --laugh-mode=token.",
-    )
-    parser.add_argument(
-        "--disable-hamza-normalization",
+        "--skip-dummy-demo",
         action="store_true",
-        help="Disable strict hamza normalization.",
+        help="Skip dummy DataFrame demonstration.",
     )
     parser.add_argument(
-        "--disable-darija-prefix-normalization",
-        action="store_true",
-        help="Disable Darija Arabic prefix attachment normalization.",
+        "--preview-rows",
+        type=int,
+        default=8,
+        help="Number of rows to print from final cleaned DataFrame.",
     )
     parser.add_argument(
-        "--disable-arabizi-prefix-normalization",
+        "--keep-qc-columns",
         action="store_true",
-        help="Disable Arabizi prefix spacing normalization.",
+        help="Keep qc_changed_fields and qc_notes in the cleaned output CSV.",
+    )
+    parser.add_argument(
+        "--keep-msa-darija-leakage",
+        action="store_true",
+        help="Keep rows where modern_standard_arabic appears to contain Darija markers.",
+    )
+    parser.add_argument(
+        "--keep-error-status-rows",
+        action="store_true",
+        help="Keep rows where status is ERROR instead of dropping them.",
+    )
+    parser.add_argument(
+        "--english-normalization",
+        choices=("none", "stem", "lemma"),
+        default="none",
+        help="Apply optional English normalization: none, stemming, or lemmatization.",
     )
     parser.add_argument(
         "--disable-english-contraction-expansion",
         action="store_true",
-        help="Disable expansion of English contractions (won't -> will not).",
+        help="Disable expansion of common English contractions.",
     )
     parser.add_argument(
-        "--disable-english-typo-fixes",
+        "--split-arabic-clitics",
         action="store_true",
-        help="Disable basic English typo corrections.",
+        help="Apply lightweight rule-based clitic segmentation for Arabic-script fields.",
     )
     parser.add_argument(
-        "--min-words-per-field",
+        "--split-darija-negation",
+        action="store_true",
+        help="When clitic splitting is enabled, split Moroccan negation pattern ma...sh.",
+    )
+    parser.add_argument(
+        "--use-light-arabic-stemming",
+        action="store_true",
+        help="Apply lightweight Arabic prefix/suffix stemming for MSA and Darija Arabic.",
+    )
+    parser.add_argument(
+        "--transliterate-arabizi-to-arabic",
+        action="store_true",
+        help="Transliterate Arabizi to Arabic script before cleaning.",
+    )
+    parser.add_argument(
+        "--arabizi-drop-vowels",
+        action="store_true",
+        help="Drop Arabizi vowels (a,e,i,o,u) before token-level cleaning.",
+    )
+    parser.add_argument(
+        "--arabizi-max-char-repeat",
         type=int,
         default=2,
-        help="Minimum words per non-empty field before removal.",
+        help="Maximum allowed repeated characters in Arabizi tokens.",
     )
     parser.add_argument(
-        "--max-words-per-field",
-        type=int,
-        default=150,
-        help="Maximum words per field before removal.",
-    )
-    parser.add_argument(
-        "--missing-value-policy",
-        default="flag",
-        choices=["flag", "remove"],
-        help="Policy for rows containing NaN values in target text columns.",
-    )
-    parser.add_argument(
-        "--cleaning-profile",
-        default="strict",
-        choices=["strict", "balanced"],
-        help=(
-            "strict: aggressive rules for maximal normalization/validation; "
-            "balanced: lighter language/coherence checks for better retention."
-        ),
+        "--replace-emojis-with-token",
+        action="store_true",
+        help="Replace emojis with token 'emoji' instead of removing them.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
-    """Entry point."""
     args = parse_args()
-    setup_logging(args.log_level)
+
+    darija_stopwords = parse_stopword_argument(args.darija_stopwords, DEFAULT_DARIJA_STOPWORDS)
+    arabizi_stopwords = parse_stopword_argument(args.arabizi_stopwords, DEFAULT_ARABIZI_STOPWORDS)
+    options = CleaningOptions(
+        english_normalization=args.english_normalization,
+        expand_english_contractions=not args.disable_english_contraction_expansion,
+        split_arabic_clitics=args.split_arabic_clitics,
+        split_darija_negation=args.split_darija_negation,
+        use_light_arabic_stemming=args.use_light_arabic_stemming,
+        transliterate_arabizi_to_arabic=args.transliterate_arabizi_to_arabic,
+        arabizi_drop_vowels=args.arabizi_drop_vowels,
+        arabizi_max_char_repeat=max(1, int(args.arabizi_max_char_repeat)),
+        emoji_replacement=" emoji " if args.replace_emojis_with_token else " ",
+    )
+
+    if not args.skip_dummy_demo:
+        run_dummy_demo(darija_stopwords, arabizi_stopwords, options)
 
     input_path = Path(args.input)
-    output_dir = Path(args.output_dir)
-    output_csv_path = output_dir / args.output_name
-    report_path = output_dir / args.report_name
-
     if not input_path.exists():
-        raise FileNotFoundError(f"Input CSV not found: {input_path}")
+        raise FileNotFoundError(f"Input file not found: {input_path}")
 
+    df = pd.read_csv(input_path, encoding="utf-8-sig")
+    cleaned_df, top_darija_words, stats = clean_parallel_corpus(
+        df,
+        darija_stopwords=darija_stopwords,
+        arabizi_stopwords=arabizi_stopwords,
+        options=options,
+        keep_qc_columns=args.keep_qc_columns,
+        drop_msa_darija_leakage=not args.keep_msa_darija_leakage,
+        drop_error_status_rows=not args.keep_error_status_rows,
+    )
+
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logging.info("Reading input CSV: %s", input_path)
-    df = pd.read_csv(input_path, encoding="utf-8-sig", dtype=object)
-    validate_columns(df)
+    cleaned_csv_path = output_dir / args.output_name
+    top_words_path = output_dir / "darija_arabic_top_100.csv"
+    report_path = output_dir / "cleaning_report.json"
 
-    length_config = LengthCheckConfig(
-        char_ratio_threshold=float(args.char_ratio_threshold),
-        word_ratio_threshold=float(args.word_ratio_threshold),
-        min_chars_for_ratio=3,
+    cleaned_df.to_csv(cleaned_csv_path, index=False, encoding="utf-8")
+    pd.DataFrame(top_darija_words, columns=["word", "count"]).to_csv(
+        top_words_path,
+        index=False,
+        encoding="utf-8",
     )
 
-    stopword_config = StopwordConfig(
-        remove_english=not args.disable_english_stopwords,
-        remove_arabic=not args.disable_arabic_stopwords,
-        remove_arabizi=not args.disable_arabizi_stopwords,
-    )
-
-    advanced_config = AdvancedNormalizationConfig(
-        arabic_final_taa_mode=args.arabic_final_taa_mode,
-        darija_g_standard=args.darija_g_standard,
-        darija_v_standard=args.darija_v_standard,
-        arabizi_kh_standard=args.arabizi_kh_standard,
-        laugh_mode=args.laugh_mode,
-        laugh_token=args.laugh_token,
-        normalize_hamza=not args.disable_hamza_normalization,
-        normalize_arabizi_prefixes=not args.disable_arabizi_prefix_normalization,
-        normalize_darija_prefixes=not args.disable_darija_prefix_normalization,
-        expand_english_contractions=not args.disable_english_contraction_expansion,
-        apply_basic_english_spell_fixes=not args.disable_english_typo_fixes,
-        min_words_per_field=max(1, int(args.min_words_per_field)),
-        max_words_per_field=max(1, int(args.max_words_per_field)),
-        missing_value_policy=args.missing_value_policy,
-    )
-
-    if args.cleaning_profile == "balanced":
-        # Keep core hygiene; relax rules that over-flag cross-script named entities.
-        advanced_config = AdvancedNormalizationConfig(
-            arabic_final_taa_mode=advanced_config.arabic_final_taa_mode,
-            darija_g_standard=advanced_config.darija_g_standard,
-            darija_v_standard=advanced_config.darija_v_standard,
-            arabizi_kh_standard="keep",
-            laugh_mode=advanced_config.laugh_mode,
-            laugh_token=advanced_config.laugh_token,
-            normalize_hamza=False,
-            normalize_arabizi_prefixes=False,
-            normalize_darija_prefixes=False,
-            expand_english_contractions=advanced_config.expand_english_contractions,
-            apply_basic_english_spell_fixes=advanced_config.apply_basic_english_spell_fixes,
-            min_words_per_field=1,
-            max_words_per_field=max(advanced_config.max_words_per_field, 180),
-            missing_value_policy=advanced_config.missing_value_policy,
-        )
-
-    english_stopwords = build_stopword_set(
-        base=DEFAULT_ENGLISH_STOPWORDS,
-        extra_inline=args.english_stopwords_add,
-        extra_file=args.english_stopwords_file,
-        normalizer=normalize_english_stopword,
-    )
-    arabic_stopwords = build_stopword_set(
-        base=DEFAULT_ARABIC_STOPWORDS,
-        extra_inline=args.arabic_stopwords_add,
-        extra_file=args.arabic_stopwords_file,
-        normalizer=normalize_arabic_stopword,
-    )
-    arabizi_stopwords = build_stopword_set(
-        base=DEFAULT_ARABIZI_STOPWORDS,
-        extra_inline=args.arabizi_stopwords_add,
-        extra_file=args.arabizi_stopwords_file,
-        normalizer=normalize_arabizi_stopword,
-    )
-
-    logging.info(
-        "Stopwords loaded | english=%s arabic=%s arabizi=%s | enabled=(%s,%s,%s)",
-        len(english_stopwords),
-        len(arabic_stopwords),
-        len(arabizi_stopwords),
-        stopword_config.remove_english,
-        stopword_config.remove_arabic,
-        stopword_config.remove_arabizi,
-    )
-
-    cleaned_df, report = process_dataframe(
-        df,
-        length_config=length_config,
-        english_stopwords=english_stopwords,
-        arabic_stopwords=arabic_stopwords,
-        arabizi_stopwords=arabizi_stopwords,
-        stopword_config=stopword_config,
-        advanced_config=advanced_config,
-    )
-
-    if args.drop_removed_rows:
-        before = len(cleaned_df)
-        cleaned_df = cleaned_df[cleaned_df["status"] != STATUS_REMOVED].copy()
-        dropped = before - len(cleaned_df)
-        logging.info("Dropped %s REMOVED rows from written CSV due to --drop-removed-rows", dropped)
-        report["rows_dropped_from_output_because_removed"] = int(dropped)
-
-    report["input_csv"] = str(input_path)
-    report["output_csv"] = str(output_csv_path)
-    report["report_json"] = str(report_path)
-    report["rows_written_to_output_csv"] = int(len(cleaned_df))
-    report["stopword_settings"] = {
-        "english_enabled": stopword_config.remove_english,
-        "arabic_enabled": stopword_config.remove_arabic,
-        "arabizi_enabled": stopword_config.remove_arabizi,
-        "english_count": len(english_stopwords),
-        "arabic_count": len(arabic_stopwords),
-        "arabizi_count": len(arabizi_stopwords),
-        "english_add_arg": args.english_stopwords_add or "",
-        "arabic_add_arg": args.arabic_stopwords_add or "",
-        "arabizi_add_arg": args.arabizi_stopwords_add or "",
-        "english_stopwords_file": args.english_stopwords_file or "",
-        "arabic_stopwords_file": args.arabic_stopwords_file or "",
-        "arabizi_stopwords_file": args.arabizi_stopwords_file or "",
+    report = {
+        "input_file": str(input_path),
+        "cleaned_file": str(cleaned_csv_path),
+        "top_darija_words_file": str(top_words_path),
+        "kept_qc_columns": bool(args.keep_qc_columns),
+        "kept_msa_darija_leakage": bool(args.keep_msa_darija_leakage),
+        "kept_error_status_rows": bool(args.keep_error_status_rows),
+        "english_normalization": options.english_normalization,
+        "expand_english_contractions": options.expand_english_contractions,
+        "split_arabic_clitics": options.split_arabic_clitics,
+        "split_darija_negation": options.split_darija_negation,
+        "use_light_arabic_stemming": options.use_light_arabic_stemming,
+        "transliterate_arabizi_to_arabic": options.transliterate_arabizi_to_arabic,
+        "arabizi_drop_vowels": options.arabizi_drop_vowels,
+        "arabizi_max_char_repeat": options.arabizi_max_char_repeat,
+        "emoji_replacement": "emoji" if args.replace_emojis_with_token else "removed",
+        **stats,
     }
-    report["advanced_normalization_settings"] = {
-        "cleaning_profile": args.cleaning_profile,
-        "arabic_final_taa_mode": advanced_config.arabic_final_taa_mode,
-        "darija_g_standard": advanced_config.darija_g_standard,
-        "darija_v_standard": advanced_config.darija_v_standard,
-        "arabizi_kh_standard": advanced_config.arabizi_kh_standard,
-        "laugh_mode": advanced_config.laugh_mode,
-        "laugh_token": advanced_config.laugh_token,
-        "normalize_hamza": advanced_config.normalize_hamza,
-        "normalize_arabizi_prefixes": advanced_config.normalize_arabizi_prefixes,
-        "normalize_darija_prefixes": advanced_config.normalize_darija_prefixes,
-        "expand_english_contractions": advanced_config.expand_english_contractions,
-        "apply_basic_english_spell_fixes": advanced_config.apply_basic_english_spell_fixes,
-        "min_words_per_field": advanced_config.min_words_per_field,
-        "max_words_per_field": advanced_config.max_words_per_field,
-        "missing_value_policy": advanced_config.missing_value_policy,
-    }
+    with report_path.open("w", encoding="utf-8") as file_obj:
+        json.dump(report, file_obj, ensure_ascii=False, indent=2)
 
-    # Preserve original column order when possible.
-    output_columns = list(df.columns)
-    for required in EXPECTED_COLUMNS:
-        if required not in output_columns:
-            output_columns.append(required)
-    cleaned_df = cleaned_df.reindex(columns=output_columns)
-
-    logging.info("Writing cleaned CSV: %s", output_csv_path)
-    cleaned_df.to_csv(output_csv_path, index=False, encoding="utf-8")
-
-    logging.info("Writing JSON report: %s", report_path)
-    with report_path.open("w", encoding="utf-8") as fp:
-        json.dump(report, fp, ensure_ascii=False, indent=2)
-
-    logging.info(
-        "Done. total=%s cleaned=%s flagged=%s removed=%s written=%s",
-        report["total_rows_processed"],
-        report["cleaned_rows"],
-        report["flagged_rows"],
-        report["removed_rows"],
-        report["rows_written_to_output_csv"],
-    )
+    print_dataframe_preview("Final cleaned DataFrame preview:", cleaned_df, rows=args.preview_rows)
+    print(f"\nCleaning report: {json.dumps(report, ensure_ascii=False, indent=2)}")
 
 
 if __name__ == "__main__":
